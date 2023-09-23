@@ -14,7 +14,7 @@ const clickableShapeCreators = [
 	{ tool: 'ellipse', shape: 'geo' },
 	{ tool: 'triangle', shape: 'geo' },
 	{ tool: 'diamond', shape: 'geo' },
-	{ tool: 'cloud', shape: 'geo' },
+	{ tool: 'pentagon', shape: 'geo' },
 	{ tool: 'hexagon', shape: 'geo' },
 	// { tool: 'octagon', shape: 'geo' },
 	{ tool: 'star', shape: 'geo' },
@@ -40,7 +40,7 @@ const draggableShapeCreators = [
 	{ tool: 'ellipse', shape: 'geo' },
 	{ tool: 'triangle', shape: 'geo' },
 	{ tool: 'diamond', shape: 'geo' },
-	{ tool: 'cloud', shape: 'geo' },
+	{ tool: 'pentagon', shape: 'geo' },
 	{ tool: 'hexagon', shape: 'geo' },
 	// { tool: 'octagon', shape: 'geo' },
 	{ tool: 'star', shape: 'geo' },
@@ -97,7 +97,6 @@ test.describe('Shape Tools', () => {
 	})
 
 	test('creates shapes clickable tools', async () => {
-		await page.keyboard.press('v')
 		await page.keyboard.press('Control+a')
 		await page.keyboard.press('Backspace')
 		expect(await getAllShapeTypes(page)).toEqual([])
@@ -125,7 +124,6 @@ test.describe('Shape Tools', () => {
 
 			// Reset for next time
 			await page.mouse.click(0, 0) // to ensure we're not focused
-			await page.keyboard.press('v') // go to the select tool
 			await page.keyboard.press('Control+a')
 			await page.keyboard.press('Backspace')
 		}
@@ -164,7 +162,6 @@ test.describe('Shape Tools', () => {
 
 			// Reset for next time
 			await page.mouse.click(0, 0) // to ensure we're not focused
-			await page.keyboard.press('v')
 			await page.keyboard.press('Control+a')
 			await page.keyboard.press('Backspace')
 		}

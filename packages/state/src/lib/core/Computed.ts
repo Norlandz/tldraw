@@ -26,7 +26,7 @@ type UNINITIALIZED = typeof UNINITIALIZED
  * const count = atom('count', 0)
  * const double = computed('double', (prevValue) => {
  *   if (isUninitialized(prevValue)) {
- *     print('First time!')
+ *     console.log('First time!')
  *   }
  *   return count.value * 2
  * })

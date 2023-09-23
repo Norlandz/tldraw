@@ -52,6 +52,28 @@ test.describe('Canvas events', () => {
 				name: 'pointer_up',
 			})
 		})
+
+		test('pointer leave', async () => {
+			await page.mouse.move(200, 200) // to kill any double clicks
+			await page.mouse.move(100, 100)
+			await page.mouse.move(-10, 50)
+			expect(await page.evaluate(() => __tldraw_editor_events.at(-1))).toMatchObject({
+				target: 'canvas',
+				type: 'pointer',
+				name: 'pointer_leave',
+			})
+		})
+
+		test('pointer enter', async () => {
+			await page.mouse.move(200, 200) // to kill any double clicks
+			await page.mouse.move(-10, 50)
+			await page.mouse.move(1, 50)
+			expect(await page.evaluate(() => __tldraw_editor_events.at(-2))).toMatchObject({
+				target: 'canvas',
+				type: 'pointer',
+				name: 'pointer_enter',
+			})
+		})
 	})
 
 	test.describe('click events', () => {
@@ -116,11 +138,30 @@ test.describe('Shape events', () => {
 	})
 
 	test.describe('pointer events', () => {
+		test('pointer enter', async () => {
+			await page.mouse.move(51, 51)
+			expect(await page.evaluate(() => __tldraw_editor_events.at(-2))).toMatchObject({
+				target: 'shape',
+				type: 'pointer',
+				name: 'pointer_enter',
+			})
+		})
+
+		test('pointer leave', async () => {
+			await page.mouse.move(51, 51)
+			await page.mouse.move(-10, -10)
+			expect(await page.evaluate(() => __tldraw_editor_events.at(-1))).toMatchObject({
+				target: 'shape',
+				type: 'pointer',
+				name: 'pointer_leave',
+			})
+		})
+
 		test('pointer down', async () => {
 			await page.mouse.move(51, 51)
 			await page.mouse.down()
 			expect(await page.evaluate(() => __tldraw_editor_events.at(-1))).toMatchObject({
-				target: 'canvas',
+				target: 'shape',
 				type: 'pointer',
 				name: 'pointer_down',
 			})
@@ -130,7 +171,7 @@ test.describe('Shape events', () => {
 			await page.mouse.move(51, 51)
 			await page.mouse.move(52, 52)
 			expect(await page.evaluate(() => __tldraw_editor_events.at(-1))).toMatchObject({
-				target: 'canvas',
+				target: 'shape',
 				type: 'pointer',
 				name: 'pointer_move',
 			})
@@ -140,8 +181,8 @@ test.describe('Shape events', () => {
 			await page.mouse.move(51, 51)
 			await page.mouse.down()
 			await page.mouse.up()
-			expect(await page.evaluate(() => __tldraw_editor_events.at(-1))).toMatchObject({
-				target: 'canvas',
+			expect(await page.evaluate(() => __tldraw_editor_events.at(-2))).toMatchObject({
+				target: 'shape',
 				type: 'pointer',
 				name: 'pointer_up',
 			})

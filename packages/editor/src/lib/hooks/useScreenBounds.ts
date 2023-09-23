@@ -1,34 +1,35 @@
 import throttle from 'lodash.throttle'
 import { useLayoutEffect } from 'react'
+import { useContainer } from './useContainer'
 import { useEditor } from './useEditor'
 
 export function useScreenBounds() {
 	const editor = useEditor()
+	const container = useContainer()
 
 	useLayoutEffect(() => {
 		const updateBounds = throttle(
 			() => {
-				if (editor.instanceState.isFocused) {
-					editor.updateViewportScreenBounds()
-				}
+				editor.updateViewportScreenBounds()
 			},
 			200,
-			{
-				trailing: true,
-			}
+			{ trailing: true }
 		)
 
-		// Rather than running getClientRects on every frame, we'll
-		// run it once a second or when the window resizes / scrolls.
+		const resizeObserver = new ResizeObserver((entries) => {
+			if (entries[0].contentRect) {
+				updateBounds()
+			}
+		})
+
+		if (container) {
+			resizeObserver.observe(container)
+		}
+
 		updateBounds()
-		const interval = setInterval(updateBounds, 1000)
-		window.addEventListener('resize', updateBounds)
-		window.addEventListener('scroll', updateBounds)
 
 		return () => {
-			clearInterval(interval)
-			window.removeEventListener('resize', updateBounds)
-			window.removeEventListener('scroll', updateBounds)
+			resizeObserver.disconnect()
 		}
-	})
+	}, [editor, container])
 }

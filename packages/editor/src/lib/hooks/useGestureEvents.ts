@@ -1,11 +1,11 @@
+import { Vec2d } from '@tldraw/primitives'
 import type { AnyHandlerEventTypes, EventTypes, GestureKey, Handler } from '@use-gesture/core/types'
 import { createUseGesture, pinchAction, wheelAction } from '@use-gesture/react'
 import throttle from 'lodash.throttle'
 import * as React from 'react'
 import { TLWheelEventInfo } from '../editor/types/event-types'
-import { Vec2d } from '../primitives/Vec2d'
 import { preventDefault } from '../utils/dom'
-import { normalizeWheel } from '../utils/normalizeWheel'
+import { normalizeWheel } from './shared'
 import { useEditor } from './useEditor'
 
 type check<T extends AnyHandlerEventTypes, Key extends GestureKey> = undefined extends T[Key]
@@ -48,7 +48,7 @@ export function useGestureEvents(ref: React.RefObject<HTMLDivElement>) {
 		let pinchState = null as null | 'zooming' | 'panning'
 
 		const onWheel: Handler<'wheel', WheelEvent> = ({ event }) => {
-			if (!editor.instanceState.isFocused) {
+			if (!editor.isFocused) {
 				return
 			}
 
@@ -64,12 +64,12 @@ export function useGestureEvents(ref: React.RefObject<HTMLDivElement>) {
 			// default on the evnet) if the user is wheeling over an a shape
 			// that is scrollable which they're currently editing.
 
-			if (editor.editingShapeId) {
-				const shape = editor.getShape(editor.editingShapeId)
+			if (editor.editingId) {
+				const shape = editor.getShapeById(editor.editingId)
 				if (shape) {
 					const util = editor.getShapeUtil(shape)
 					if (util.canScroll(shape)) {
-						const bounds = editor.getShapePageBounds(editor.editingShapeId)
+						const bounds = editor.getPageBoundsById(editor.editingId)
 						if (bounds?.containsPoint(editor.inputs.currentPagePoint)) {
 							return
 						}

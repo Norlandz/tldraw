@@ -8,5 +8,5 @@
 		"noImplicitReturns": false,
 		"rootDir": "src"
 	},
-	"references": [{ "path": "../editor" }]
+	"references": [{ "path": "../editor" }, { "path": "../ui" }]
 }

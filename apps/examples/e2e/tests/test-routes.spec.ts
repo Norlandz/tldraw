@@ -7,7 +7,7 @@ test.describe('Routes', () => {
 	})
 
 	test('basic', async ({ page }) => {
-		await page.goto('http://localhost:5420/develop')
+		await page.goto('http://localhost:5420/')
 		await page.waitForSelector('.tl-canvas')
 	})
 
@@ -68,11 +68,6 @@ test.describe('Routes', () => {
 
 	test('persistence', async ({ page }) => {
 		await page.goto('http://localhost:5420/persistence')
-		await page.waitForSelector('.tl-canvas')
-	})
-
-	test('snapshots', async ({ page }) => {
-		await page.goto('http://localhost:5420/snapshots')
 		await page.waitForSelector('.tl-canvas')
 	})
 })

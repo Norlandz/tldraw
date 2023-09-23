@@ -1,4 +1,4 @@
-import { uniqueId } from '@tldraw/tldraw'
+import { nanoid } from 'nanoid'
 import type { VscodeMessagePairs } from '../../../messages'
 import { vscode } from './vscode'
 
@@ -26,7 +26,7 @@ export function rpc(
 	type ErrorType = VscodeMessagePairs[typeof id]['error']
 
 	const type = (id + '/request') as RequestType['type']
-	const uuid = uniqueId()
+	const uuid = nanoid()
 	return new Promise<ResponseType['data']>((resolve, reject) => {
 		const inMessage = {
 			uuid,

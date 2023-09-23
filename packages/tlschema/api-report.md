@@ -14,7 +14,6 @@ import { SerializedStore } from '@tldraw/store';
 import { Signal } from '@tldraw/state';
 import { Store } from '@tldraw/store';
 import { StoreSchema } from '@tldraw/store';
-import { StoreSnapshot } from '@tldraw/store';
 import { T } from '@tldraw/validate';
 import { UnknownRecord } from '@tldraw/store';
 
@@ -205,45 +204,13 @@ export const drawShapeProps: {
 export const EMBED_DEFINITIONS: readonly [{
     readonly type: "tldraw";
     readonly title: "tldraw";
-    readonly hostnames: readonly ["beta.tldraw.com", "tldraw.com"];
+    readonly hostnames: readonly ["beta.tldraw.com", "lite.tldraw.com", "www.tldraw.com"];
     readonly minWidth: 300;
     readonly minHeight: 300;
     readonly width: 720;
     readonly height: 500;
     readonly doesResize: true;
     readonly canUnmount: true;
-    readonly toEmbedUrl: (url: string) => string | undefined;
-    readonly fromEmbedUrl: (url: string) => string | undefined;
-}, {
-    readonly type: "figma";
-    readonly title: "Figma";
-    readonly hostnames: readonly ["figma.com"];
-    readonly width: 720;
-    readonly height: 500;
-    readonly doesResize: true;
-    readonly canUnmount: true;
-    readonly toEmbedUrl: (url: string) => string | undefined;
-    readonly fromEmbedUrl: (url: string) => string | undefined;
-}, {
-    readonly type: "google_maps";
-    readonly title: "Google Maps";
-    readonly hostnames: readonly ["google.*"];
-    readonly width: 720;
-    readonly height: 500;
-    readonly doesResize: true;
-    readonly canUnmount: false;
-    readonly toEmbedUrl: (url: string) => string | undefined;
-    readonly fromEmbedUrl: (url: string) => string | undefined;
-}, {
-    readonly type: "val_town";
-    readonly title: "Val Town";
-    readonly hostnames: readonly ["val.town"];
-    readonly minWidth: 260;
-    readonly minHeight: 100;
-    readonly width: 720;
-    readonly height: 500;
-    readonly doesResize: true;
-    readonly canUnmount: false;
     readonly toEmbedUrl: (url: string) => string | undefined;
     readonly fromEmbedUrl: (url: string) => string | undefined;
 }, {
@@ -292,6 +259,26 @@ export const EMBED_DEFINITIONS: readonly [{
         readonly 'allow-presentation': true;
     };
     readonly isAspectRatioLocked: true;
+    readonly toEmbedUrl: (url: string) => string | undefined;
+    readonly fromEmbedUrl: (url: string) => string | undefined;
+}, {
+    readonly type: "figma";
+    readonly title: "Figma";
+    readonly hostnames: readonly ["figma.com"];
+    readonly width: 720;
+    readonly height: 500;
+    readonly doesResize: true;
+    readonly canUnmount: true;
+    readonly toEmbedUrl: (url: string) => string | undefined;
+    readonly fromEmbedUrl: (url: string) => string | undefined;
+}, {
+    readonly type: "google_maps";
+    readonly title: "Google Maps";
+    readonly hostnames: readonly ["google.*"];
+    readonly width: 720;
+    readonly height: 500;
+    readonly doesResize: true;
+    readonly canUnmount: false;
     readonly toEmbedUrl: (url: string) => string | undefined;
     readonly fromEmbedUrl: (url: string) => string | undefined;
 }, {
@@ -470,14 +457,14 @@ export const frameShapeProps: {
 };
 
 // @public (undocumented)
-export const GeoShapeGeoStyle: EnumStyleProp<"arrow-down" | "arrow-left" | "arrow-right" | "arrow-up" | "check-box" | "cloud" | "diamond" | "ellipse" | "hexagon" | "octagon" | "oval" | "pentagon" | "rectangle" | "rhombus-2" | "rhombus" | "star" | "trapezoid" | "triangle" | "x-box">;
+export const GeoShapeGeoStyle: EnumStyleProp<"arrow-down" | "arrow-left" | "arrow-right" | "arrow-up" | "check-box" | "diamond" | "ellipse" | "hexagon" | "octagon" | "oval" | "pentagon" | "rectangle" | "rhombus-2" | "rhombus" | "star" | "trapezoid" | "triangle" | "x-box">;
 
 // @internal (undocumented)
 export const geoShapeMigrations: Migrations;
 
 // @public (undocumented)
 export const geoShapeProps: {
-    geo: EnumStyleProp<"arrow-down" | "arrow-left" | "arrow-right" | "arrow-up" | "check-box" | "cloud" | "diamond" | "ellipse" | "hexagon" | "octagon" | "oval" | "pentagon" | "rectangle" | "rhombus-2" | "rhombus" | "star" | "trapezoid" | "triangle" | "x-box">;
+    geo: EnumStyleProp<"arrow-down" | "arrow-left" | "arrow-right" | "arrow-up" | "check-box" | "diamond" | "ellipse" | "hexagon" | "octagon" | "oval" | "pentagon" | "rectangle" | "rhombus-2" | "rhombus" | "star" | "trapezoid" | "triangle" | "x-box">;
     labelColor: EnumStyleProp<"black" | "blue" | "green" | "grey" | "light-blue" | "light-green" | "light-red" | "light-violet" | "orange" | "red" | "violet" | "yellow">;
     color: EnumStyleProp<"black" | "blue" | "green" | "grey" | "light-blue" | "light-green" | "light-red" | "light-violet" | "orange" | "red" | "violet" | "yellow">;
     fill: EnumStyleProp<"none" | "pattern" | "semi" | "solid">;
@@ -870,6 +857,8 @@ export type TLCanvasUiColor = SetValue<typeof TL_CANVAS_UI_COLOR_TYPES>;
 // @public
 export interface TLCursor {
     // (undocumented)
+    color: TLCanvasUiColor;
+    // (undocumented)
     rotation: number;
     // (undocumented)
     type: TLCursorType;
@@ -883,7 +872,6 @@ export type TLDefaultColorStyle = T.TypeOf<typeof DefaultColorStyle>;
 
 // @public (undocumented)
 export type TLDefaultColorTheme = Expand<{
-    id: 'dark' | 'light';
     text: string;
     background: string;
     solid: string;
@@ -961,8 +949,6 @@ export type TLGroupShape = TLBaseShape<'group', TLGroupShapeProps>;
 export interface TLHandle {
     // (undocumented)
     canBind?: boolean;
-    // (undocumented)
-    canSnap?: boolean;
     id: string;
     // (undocumented)
     index: string;
@@ -1004,15 +990,11 @@ export interface TLInstance extends BaseRecord<'instance', TLInstanceId> {
     // (undocumented)
     brush: Box2dModel | null;
     // (undocumented)
-    canMoveCamera: boolean;
-    // (undocumented)
     chatMessage: string;
     // (undocumented)
     currentPageId: TLPageId;
     // (undocumented)
     cursor: TLCursor;
-    // (undocumented)
-    devicePixelRatio: number;
     // (undocumented)
     exportBackground: boolean;
     // (undocumented)
@@ -1020,15 +1002,9 @@ export interface TLInstance extends BaseRecord<'instance', TLInstanceId> {
     // (undocumented)
     highlightedUserIds: string[];
     // (undocumented)
-    isChangingStyle: boolean;
-    // (undocumented)
     isChatting: boolean;
     // (undocumented)
-    isCoarsePointer: boolean;
-    // (undocumented)
     isDebugMode: boolean;
-    // (undocumented)
-    isFocused: boolean;
     // (undocumented)
     isFocusMode: boolean;
     // (undocumented)
@@ -1036,15 +1012,11 @@ export interface TLInstance extends BaseRecord<'instance', TLInstanceId> {
     // (undocumented)
     isPenMode: boolean;
     // (undocumented)
-    isReadonly: boolean;
-    // (undocumented)
     isToolLocked: boolean;
     // (undocumented)
     meta: JsonObject;
     // (undocumented)
     opacityForNextShape: TLOpacityType;
-    // (undocumented)
-    openMenus: string[];
     // (undocumented)
     screenBounds: Box2dModel;
     // (undocumented)
@@ -1064,23 +1036,23 @@ export type TLInstanceId = RecordId<TLInstance>;
 // @public
 export interface TLInstancePageState extends BaseRecord<'instance_page_state', TLInstancePageStateId> {
     // (undocumented)
-    croppingShapeId: null | TLShapeId;
+    croppingId: null | TLShapeId;
     // (undocumented)
-    editingShapeId: null | TLShapeId;
+    editingId: null | TLShapeId;
     // (undocumented)
-    erasingShapeIds: TLShapeId[];
+    erasingIds: TLShapeId[];
     // (undocumented)
-    focusedGroupId: null | TLShapeId;
+    focusLayerId: null | TLShapeId;
     // (undocumented)
-    hintingShapeIds: TLShapeId[];
+    hintingIds: TLShapeId[];
     // (undocumented)
-    hoveredShapeId: null | TLShapeId;
+    hoveredId: null | TLShapeId;
     // (undocumented)
     meta: JsonObject;
     // (undocumented)
     pageId: RecordId<TLPage>;
     // (undocumented)
-    selectedShapeIds: TLShapeId[];
+    selectedIds: TLShapeId[];
 }
 
 // @public (undocumented)
@@ -1117,7 +1089,7 @@ export interface TLInstancePresence extends BaseRecord<'instance_presence', TLIn
     // (undocumented)
     scribble: null | TLScribble;
     // (undocumented)
-    selectedShapeIds: TLShapeId[];
+    selectedIds: TLShapeId[];
     // (undocumented)
     userId: string;
     // (undocumented)
@@ -1206,7 +1178,7 @@ export type TLStoreProps = {
 export type TLStoreSchema = StoreSchema<TLRecord, TLStoreProps>;
 
 // @public (undocumented)
-export type TLStoreSnapshot = StoreSnapshot<TLRecord>;
+export type TLStoreSnapshot = SerializedStore<TLRecord>;
 
 // @public (undocumented)
 export type TLTextShape = TLBaseShape<'text', TLTextShapeProps>;

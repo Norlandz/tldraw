@@ -7,29 +7,10 @@ global.FontFace = class FontFace {
 		return Promise.resolve()
 	}
 }
-
 document.fonts = {
 	add: () => {},
 	delete: () => {},
 	forEach: () => {},
-	[Symbol.iterator]: () => [][Symbol.iterator](),
 }
 
-Object.defineProperty(window, 'matchMedia', {
-	writable: true,
-	value: jest.fn().mockImplementation((query) => ({
-		matches: false,
-		media: query,
-		onchange: null,
-		addListener: jest.fn(), // Deprecated
-		removeListener: jest.fn(), // Deprecated
-		addEventListener: jest.fn(),
-		removeEventListener: jest.fn(),
-		dispatchEvent: jest.fn(),
-	})),
-})
-
-Object.defineProperty(global.URL, 'createObjectURL', {
-	writable: true,
-	value: jest.fn(),
-})
+global.matchMedia = () => false

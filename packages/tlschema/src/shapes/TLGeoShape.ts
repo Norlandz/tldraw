@@ -17,7 +17,6 @@ import { ShapePropsType, TLBaseShape } from './TLBaseShape'
 export const GeoShapeGeoStyle = StyleProp.defineEnum('tldraw:geo', {
 	defaultValue: 'rectangle',
 	values: [
-		'cloud',
 		'rectangle',
 		'ellipse',
 		'triangle',
@@ -73,14 +72,11 @@ const Versions = {
 	AddCheckBox: 4,
 	AddVerticalAlign: 5,
 	MigrateLegacyAlign: 6,
-	AddCloud: 7,
 } as const
-
-export { Versions as GeoShapeVersions }
 
 /** @internal */
 export const geoShapeMigrations = defineMigrations({
-	currentVersion: Versions.AddCloud,
+	currentVersion: Versions.MigrateLegacyAlign,
 	migrators: {
 		[Versions.AddUrlProp]: {
 			up: (shape) => {
@@ -203,22 +199,6 @@ export const geoShapeMigrations = defineMigrations({
 						...shape.props,
 						align: oldAlign,
 					},
-				}
-			},
-		},
-		[Versions.AddCloud]: {
-			up: (shape) => {
-				return shape
-			},
-			down: (shape) => {
-				if (shape.props.geo === 'cloud') {
-					return {
-						...shape,
-						props: {
-							...shape.props,
-							geo: 'rectangle',
-						},
-					}
 				}
 			},
 		},

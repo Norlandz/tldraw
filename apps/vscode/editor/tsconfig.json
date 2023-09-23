@@ -22,6 +22,11 @@
 		"skipDefaultLibCheck": true,
 		"experimentalDecorators": true
 	},
-	"include": ["src", "../messages", "scripts"],
-	"references": [{ "path": "../../../packages/tldraw" }]
+	"include": ["src", "../messages", "scripts", "../vscode-script-utils"],
+	"references": [
+		{ "path": "../../../packages/file-format" },
+		{ "path": "../../../packages/ui" },
+		{ "path": "../../../packages/editor" },
+		{ "path": "../../../packages/utils" }
+	]
 }

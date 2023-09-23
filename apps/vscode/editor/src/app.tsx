@@ -1,17 +1,20 @@
-import { linksUiOverrides } from './utils/links'
-// eslint-disable-next-line import/no-internal-modules
-import '@tldraw/tldraw/tldraw.css'
-// eslint-disable-next-line import/no-internal-modules
-import { getAssetUrlsByImport } from '@tldraw/assets/imports'
 import {
+	Canvas,
 	Editor,
 	ErrorBoundary,
-	TLUiMenuSchema,
-	Tldraw,
-	defaultShapeTools,
-	defaultShapeUtils,
+	TldrawEditor,
+	defaultShapes,
+	defaultTools,
 	setRuntimeOverrides,
-} from '@tldraw/tldraw'
+} from '@tldraw/editor'
+import { linksUiOverrides } from './utils/links'
+// eslint-disable-next-line import/no-internal-modules
+import '@tldraw/editor/editor.css'
+import { ContextMenu, TLUiMenuSchema, TldrawUi } from '@tldraw/ui'
+// eslint-disable-next-line import/no-internal-modules
+import '@tldraw/ui/ui.css'
+// eslint-disable-next-line import/no-internal-modules
+import { getAssetUrlsByImport } from '@tldraw/assets/imports'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { VscodeMessage } from '../../messages'
 import '../public/index.css'
@@ -125,22 +128,26 @@ function TldrawInner({ uri, assetSrc, isDarkMode, fileContents }: TLDrawInnerPro
 	const assetUrls = useMemo(() => getAssetUrlsByImport({ baseUrl: assetSrc }), [assetSrc])
 
 	const handleMount = useCallback((editor: Editor) => {
-		editor.registerExternalAssetHandler('url', onCreateAssetFromUrl)
+		editor.externalContentManager.createAssetFromUrl = onCreateAssetFromUrl
 	}, [])
 
 	return (
-		<Tldraw
-			shapeUtils={defaultShapeUtils}
-			tools={defaultShapeTools}
+		<TldrawEditor
+			shapes={defaultShapes}
+			tools={defaultTools}
 			assetUrls={assetUrls}
 			persistenceKey={uri}
 			onMount={handleMount}
-			overrides={[menuOverrides, linksUiOverrides]}
 			autoFocus
 		>
 			{/* <DarkModeHandler themeKind={themeKind} /> */}
-			<FileOpen fileContents={fileContents} forceDarkMode={isDarkMode} />
-			<ChangeResponder />
-		</Tldraw>
+			<TldrawUi assetUrls={assetUrls} overrides={[menuOverrides, linksUiOverrides]}>
+				<FileOpen fileContents={fileContents} forceDarkMode={isDarkMode} />
+				<ChangeResponder />
+				<ContextMenu>
+					<Canvas />
+				</ContextMenu>
+			</TldrawUi>
+		</TldrawEditor>
 	)
 }

@@ -16,7 +16,7 @@ const array: Validator<unknown[]>;
 function arrayOf<T>(itemValidator: Validatable<T>): ArrayOfValidator<T>;
 
 // @public (undocumented)
-export class ArrayOfValidator<T> extends Validator<T[]> {
+class ArrayOfValidator<T> extends Validator<T[]> {
     constructor(itemValidator: Validatable<T>);
     // (undocumented)
     readonly itemValidator: Validatable<T>;
@@ -36,7 +36,7 @@ const boolean: Validator<boolean>;
 function dict<Key extends string, Value>(keyValidator: Validatable<Key>, valueValidator: Validatable<Value>): DictValidator<Key, Value>;
 
 // @public (undocumented)
-export class DictValidator<Key extends string, Value> extends Validator<Record<Key, Value>> {
+class DictValidator<Key extends string, Value> extends Validator<Record<Key, Value>> {
     constructor(keyValidator: Validatable<Key>, valueValidator: Validatable<Value>);
     // (undocumented)
     readonly keyValidator: Validatable<Key>;
@@ -82,7 +82,7 @@ function object<Shape extends object>(config: {
 }): ObjectValidator<Shape>;
 
 // @public (undocumented)
-export class ObjectValidator<Shape extends object> extends Validator<Shape> {
+class ObjectValidator<Shape extends object> extends Validator<Shape> {
     constructor(config: {
         readonly [K in keyof Shape]: Validatable<Shape[K]>;
     }, shouldAllowUnknownProperties?: boolean);
@@ -159,7 +159,7 @@ type TypeOf<V extends Validatable<unknown>> = V extends Validatable<infer T> ? T
 function union<Key extends string, Config extends UnionValidatorConfig<Key, Config>>(key: Key, config: Config): UnionValidator<Key, Config>;
 
 // @public (undocumented)
-export class UnionValidator<Key extends string, Config extends UnionValidatorConfig<Key, Config>, UnknownValue = never> extends Validator<TypeOf<Config[keyof Config]> | UnknownValue> {
+class UnionValidator<Key extends string, Config extends UnionValidatorConfig<Key, Config>, UnknownValue = never> extends Validator<TypeOf<Config[keyof Config]> | UnknownValue> {
     constructor(key: Key, config: Config, unknownValueValidation: (value: object, variant: string) => UnknownValue);
     // (undocumented)
     validateUnknownVariants<Unknown>(unknownValueValidation: (value: object, variant: string) => Unknown): UnionValidator<Key, Config, Unknown>;
@@ -188,7 +188,7 @@ class ValidationError extends Error {
 }
 
 // @public (undocumented)
-export class Validator<T> implements Validatable<T> {
+class Validator<T> implements Validatable<T> {
     constructor(validationFn: ValidatorFn<T>);
     check(name: string, checkFn: (value: T) => void): Validator<T>;
     // (undocumented)

@@ -44,6 +44,18 @@ const perPackageExceptions: Record<string, Record<string, () => string | undefin
 	'@tldraw/monorepo': {
 		lint: () => 'lazy lint',
 	},
+	'@tldraw/polyfills': {
+		test: () => undefined,
+	},
+	'@tldraw/tlsync-sockets': {
+		test: () => 'lazy inherit --passWithNoTests',
+	},
+	'@tldraw/tlsync-worker': {
+		test: () => 'lazy inherit --passWithNoTests',
+	},
+	'@tldraw/ui': {
+		test: () => 'lazy inherit --passWithNoTests',
+	},
 	'@tldraw/assets': {
 		test: () => undefined,
 		build: () => undefined,

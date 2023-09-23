@@ -26,8 +26,6 @@
 	--layer-canvas: 200;
 	/* Misc */
 	--tl-zoom: 1;
-	--tl-dpr-multiple: 100;
-	--tl-dpr-multiple-px: calc(var(--tl-dpr-multiple) * 1px);
 
 	/* Cursor SVGs */
 	--tl-cursor-none: none;
@@ -97,7 +95,7 @@
 	--color-background: rgb(249, 250, 251);
 	--color-brush-fill: rgba(144, 144, 144, 0.102);
 	--color-brush-stroke: rgba(144, 144, 144, 0.251);
-	--color-grid: rgb(109, 109, 109);
+	--color-grid: rgba(144, 144, 144, 0.902);
 	--color-low: rgb(237, 240, 242);
 	--color-culled: rgb(235, 238, 240);
 	--color-muted-0: rgba(0, 0, 0, 0.02);
@@ -137,7 +135,7 @@
 	--color-background: #212529;
 	--color-brush-fill: rgba(180, 180, 180, 0.05);
 	--color-brush-stroke: rgba(180, 180, 180, 0.25);
-	--color-grid: #909090;
+	--color-grid: #909090e6;
 	--color-low: #2c3136;
 	--color-culled: rgb(47, 52, 57);
 	--color-muted-0: rgba(255, 255, 255, 0.02);
@@ -193,10 +191,6 @@
 	-webkit-touch-callout: initial;
 }
 
-.tl-container:focus-within {
-	outline: 1px solid var(--color-low);
-}
-
 input,
 *[contenteditable],
 *[contenteditable] * {
@@ -223,32 +217,20 @@ input,
 	contain: strict;
 }
 
-.tl-fixed-layer {
-	position: absolute;
-	top: 0px;
-	left: 0px;
-	width: 100%;
-	height: 100%;
-	contain: strict;
-	pointer-events: none;
-}
-
 .tl-shapes {
 	position: relative;
-	z-index: 2;
+	z-index: 1;
 }
 
 .tl-overlays {
 	position: relative;
-	z-index: 3;
+	z-index: 2;
 }
 
 .tl-overlays__item {
 	position: absolute;
 	top: 0px;
 	left: 0px;
-	height: var(--tl-dpr-multiple-px);
-	width: var(--tl-dpr-multiple-px);
 	overflow: visible;
 	pointer-events: none;
 	transform-origin: top left;
@@ -258,16 +240,19 @@ input,
 	position: absolute;
 	top: 0px;
 	left: 0px;
-	height: var(--tl-dpr-multiple-px);
-	width: var(--tl-dpr-multiple-px);
+	height: 1px;
+	width: 1px;
 	pointer-events: none;
 }
 
-.tl-positioned {
+.tlui-following {
+	display: block;
 	position: absolute;
-	top: 0px;
-	left: 0px;
-	transform-origin: top left;
+	inset: 0px;
+	border-width: 2px;
+	border-style: solid;
+	z-index: 9999999;
+	pointer-events: none;
 }
 
 /* ------------------- Background ------------------- */
@@ -304,6 +289,7 @@ input,
 	width: 1px;
 	height: 1px;
 	contain: layout style size;
+	z-index: 3;
 }
 
 /* ---------------------- Brush --------------------- */
@@ -337,6 +323,26 @@ input,
 .tl-shape__culled {
 	position: relative;
 	background-color: var(--color-culled);
+}
+
+.tl-hitarea-stroke {
+	fill: none;
+	stroke: transparent;
+	pointer-events: stroke;
+	stroke-width: min(100px, calc(24px * var(--tl-scale)));
+}
+
+.tl-hitarea-fill {
+	fill: var(--color-background);
+	stroke: transparent;
+	pointer-events: all;
+	stroke-width: min(100px, calc(24px * var(--tl-scale)));
+}
+
+.tl-hitarea-fill-solid {
+	stroke: transparent;
+	pointer-events: all;
+	stroke-width: min(100px, calc(24px * var(--tl-scale)));
 }
 
 /* ---------------- Shape Containers ---------------- */
@@ -489,6 +495,7 @@ input,
 
 .tl-mobile-rotate__bg {
 	pointer-events: all;
+	r: calc(max(calc(14px * var(--tl-scale)), 20px / max(1, var(--tl-zoom))));
 	cursor: var(--tl-cursor-grab);
 }
 
@@ -515,20 +522,15 @@ input,
 	stroke: transparent;
 	pointer-events: all;
 	cursor: var(--tl-cursor-grabbing);
+	r: calc(12px / var(--tl-zoom));
 }
 
 .tl-handle__fg {
 	fill: var(--color-background);
 	stroke: var(--color-selection-stroke);
 	stroke-width: calc(1.5px * var(--tl-scale));
+	r: calc(4px * var(--tl-scale));
 	pointer-events: none;
-}
-
-.tl-handle__create {
-	opacity: 0;
-}
-.tl-handle__create:hover {
-	opacity: 1;
 }
 
 .tl-handle__bg:active {
@@ -540,13 +542,25 @@ input,
 	fill: var(--color-selection-fill);
 }
 
+.tl-handle__hint {
+	opacity: 0;
+}
+
+.tl-handle__hint:hover {
+	opacity: 1;
+}
+
 @media (pointer: coarse) {
 	.tl-handle__bg:active {
 		fill: var(--color-selection-fill);
 	}
 
-	.tl-handle__create {
+	.tl-handle__hint {
 		opacity: 1;
+	}
+
+	.tl-handle__hint > .tl-handle__fg {
+		r: calc(3px * var(--tl-scale));
 	}
 }
 
@@ -579,6 +593,7 @@ input,
 	top: calc(var(--scale) * 8px);
 	right: calc(var(--scale) * 8px);
 	font-size: 10px;
+	scale: var(--scale);
 	transform-origin: top right;
 	background-color: var(--color-background);
 	padding: 2px 4px;
@@ -944,7 +959,7 @@ input,
 	font-size: 16px;
 	font-weight: bold;
 	padding-bottom: var(--space-2);
-	margin: 8px 0px;
+	margin: 4px 0px;
 }
 
 .tl-bookmark__description {
@@ -1036,13 +1051,8 @@ input,
 	align-items: center;
 	color: var(--color-text);
 	text-shadow: var(--tl-text-outline);
+	overflow: hidden;
 	line-height: inherit;
-	position: relative;
-	z-index: 10;
-}
-
-.tl-text-label[data-isediting='true'] {
-	outline: calc(var(--tl-scale) * 1.5px) solid var(--color-selected);
 }
 
 .tl-text-label[data-isediting='true'] .tl-text-content {
@@ -1052,10 +1062,6 @@ input,
 .tl-text-label[data-hastext='false'][data-isediting='false'] > .tl-text-label__inner {
 	width: 40px;
 	height: 40px;
-}
-
-.tl-text-label[data-hastext='true'][data-isediting='false'] .tl-text-content {
-	pointer-events: all;
 }
 
 .tl-text-label__inner {
@@ -1096,7 +1102,7 @@ input,
 }
 
 .tl-text-label[data-isediting='true'] {
-	background-color: transparent;
+	background-color: none;
 	min-height: auto;
 }
 
@@ -1444,17 +1450,15 @@ input,
 	border-style: solid;
 	border-radius: calc(var(--radius-1) * var(--tl-scale));
 	display: flex;
-	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	text-align: left;
 	position: relative;
 	pointer-events: all;
 	overflow: hidden;
 	padding: var(--space-2);
 }
 
-.tl-shape-error-boundary::before {
+.tl-shape-error-boundary::after {
 	transform: scale(var(--tl-scale));
 	content: 'Error';
 	font-size: 12px;
@@ -1505,7 +1509,7 @@ it from receiving any pointer events or affecting the cursor. */
 	position: absolute;
 	inset: 0px;
 	z-index: 600;
-	pointer-events: all;
+	pointer-events: auto;
 }
 
 .tl-error-boundary__content {
@@ -1618,6 +1622,10 @@ it from receiving any pointer events or affecting the cursor. */
 	/* If mobile always show handle-hint as there is no hover state */
 	.tl-canvas__mobile .tl-handle__hint {
 		opacity: 1;
+	}
+
+	.tl-canvas__mobile .tl-handle__bg {
+		r: calc(20px / var(--tl-zoom));
 	}
 }
 

@@ -18,13 +18,13 @@ import { TLShapeId } from './TLShape'
 export interface TLInstancePageState
 	extends BaseRecord<'instance_page_state', TLInstancePageStateId> {
 	pageId: RecordId<TLPage>
-	selectedShapeIds: TLShapeId[]
-	hintingShapeIds: TLShapeId[]
-	erasingShapeIds: TLShapeId[]
-	hoveredShapeId: TLShapeId | null
-	editingShapeId: TLShapeId | null
-	croppingShapeId: TLShapeId | null
-	focusedGroupId: TLShapeId | null
+	selectedIds: TLShapeId[]
+	hintingIds: TLShapeId[]
+	erasingIds: TLShapeId[]
+	hoveredId: TLShapeId | null
+	editingId: TLShapeId | null
+	croppingId: TLShapeId | null
+	focusLayerId: TLShapeId | null
 	meta: JsonObject
 }
 
@@ -35,13 +35,13 @@ export const instancePageStateValidator: T.Validator<TLInstancePageState> = T.mo
 		typeName: T.literal('instance_page_state'),
 		id: idValidator<TLInstancePageStateId>('instance_page_state'),
 		pageId: pageIdValidator,
-		selectedShapeIds: T.arrayOf(shapeIdValidator),
-		hintingShapeIds: T.arrayOf(shapeIdValidator),
-		erasingShapeIds: T.arrayOf(shapeIdValidator),
-		hoveredShapeId: shapeIdValidator.nullable(),
-		editingShapeId: shapeIdValidator.nullable(),
-		croppingShapeId: shapeIdValidator.nullable(),
-		focusedGroupId: shapeIdValidator.nullable(),
+		selectedIds: T.arrayOf(shapeIdValidator),
+		hintingIds: T.arrayOf(shapeIdValidator),
+		erasingIds: T.arrayOf(shapeIdValidator),
+		hoveredId: shapeIdValidator.nullable(),
+		editingId: shapeIdValidator.nullable(),
+		croppingId: shapeIdValidator.nullable(),
+		focusLayerId: shapeIdValidator.nullable(),
 		meta: T.jsonValue as T.ObjectValidator<JsonObject>,
 	})
 )
@@ -51,18 +51,17 @@ export const instancePageStateVersions = {
 	AddCroppingId: 1,
 	RemoveInstanceIdAndCameraId: 2,
 	AddMeta: 3,
-	RenameProperties: 4,
 } as const
 
 /** @public */
 export const instancePageStateMigrations = defineMigrations({
-	currentVersion: instancePageStateVersions.RenameProperties,
+	currentVersion: instancePageStateVersions.AddMeta,
 	migrators: {
 		[instancePageStateVersions.AddCroppingId]: {
 			up(instance) {
-				return { ...instance, croppingShapeId: null }
+				return { ...instance, croppingId: null }
 			},
-			down({ croppingShapeId: _croppingShapeId, ...instance }) {
+			down({ croppingId: _croppingId, ...instance }) {
 				return instance
 			},
 		},
@@ -92,52 +91,6 @@ export const instancePageStateMigrations = defineMigrations({
 				}
 			},
 		},
-		[instancePageStateVersions.RenameProperties]: {
-			up: (record) => {
-				const {
-					selectedShapeIds,
-					hintingShapeIds,
-					erasingShapeIds,
-					hoveredShapeId,
-					editingShapeId,
-					croppingShapeId,
-					focusedGroupId,
-					...rest
-				} = record
-				return {
-					selectedShapeIds: selectedShapeIds,
-					hintingShapeIds: hintingShapeIds,
-					erasingShapeIds: erasingShapeIds,
-					hoveredShapeId: hoveredShapeId,
-					editingShapeId: editingShapeId,
-					croppingShapeId: croppingShapeId,
-					focusedGroupId: focusedGroupId,
-					...rest,
-				}
-			},
-			down: (record) => {
-				const {
-					selectedShapeIds,
-					hintingShapeIds,
-					erasingShapeIds,
-					hoveredShapeId,
-					editingShapeId,
-					croppingShapeId,
-					focusedGroupId,
-					...rest
-				} = record
-				return {
-					selectedShapeIds: selectedShapeIds,
-					hintingShapeIds: hintingShapeIds,
-					erasingShapeIds: erasingShapeIds,
-					hoveredShapeId: hoveredShapeId,
-					editingShapeId: editingShapeId,
-					croppingShapeId: croppingShapeId,
-					focusedGroupId: focusedGroupId,
-					...rest,
-				}
-			},
-		},
 	},
 })
 
@@ -151,13 +104,13 @@ export const InstancePageStateRecordType = createRecordType<TLInstancePageState>
 	}
 ).withDefaultProperties(
 	(): Omit<TLInstancePageState, 'id' | 'typeName' | 'pageId'> => ({
-		editingShapeId: null,
-		croppingShapeId: null,
-		selectedShapeIds: [],
-		hoveredShapeId: null,
-		erasingShapeIds: [],
-		hintingShapeIds: [],
-		focusedGroupId: null,
+		editingId: null,
+		croppingId: null,
+		selectedIds: [],
+		hoveredId: null,
+		erasingIds: [],
+		hintingIds: [],
+		focusLayerId: null,
 		meta: {},
 	})
 )

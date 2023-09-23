@@ -1,6 +1,6 @@
 import esbuild from 'esbuild'
-import { logEnv } from './cli'
-import { copyEditor, removeDistDirectory } from './helpers'
+import { logEnv } from '../../vscode-script-utils/cli'
+import { copyEditor, removeDistDirectory } from '../../vscode-script-utils/helpers'
 
 const log = logEnv('extension')
 

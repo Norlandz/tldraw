@@ -19,7 +19,7 @@ import {
 } from '@tldraw/tlschema'
 import { objectMapFromEntries } from '@tldraw/utils'
 import { T } from '@tldraw/validate'
-import { uniqueId } from '../utils/uniqueId'
+import { uniqueId } from '../utils/data'
 
 const tabIdKey = 'TLDRAW_TAB_ID_v2' as const
 
@@ -92,8 +92,8 @@ export interface TLSessionStateSnapshot {
 	pageStates: Array<{
 		pageId: TLPageId
 		camera: { x: number; y: number; z: number }
-		selectedShapeIds: TLShapeId[]
-		focusedGroupId: TLShapeId | null
+		selectedIds: TLShapeId[]
+		focusLayerId: TLShapeId | null
 	}>
 }
 
@@ -113,8 +113,8 @@ const sessionStateSnapshotValidator: T.Validator<TLSessionStateSnapshot> = T.obj
 				y: T.number,
 				z: T.number,
 			}),
-			selectedShapeIds: T.arrayOf(shapeIdValidator),
-			focusedGroupId: shapeIdValidator.nullable(),
+			selectedIds: T.arrayOf(shapeIdValidator),
+			focusLayerId: shapeIdValidator.nullable(),
 		})
 	),
 })
@@ -189,8 +189,8 @@ export function createSessionStateSnapshotSignal(
 						y: camera?.y ?? 0,
 						z: camera?.z ?? 1,
 					},
-					selectedShapeIds: ps?.selectedShapeIds ?? [],
-					focusedGroupId: ps?.focusedGroupId ?? null,
+					selectedIds: ps?.selectedIds ?? [],
+					focusLayerId: ps?.focusLayerId ?? null,
 				} satisfies TLSessionStateSnapshot['pageStates'][0]
 			}),
 		} satisfies TLSessionStateSnapshot
@@ -257,8 +257,8 @@ export function loadSessionStateSnapshotIntoStore(
 		addDiff.added[pageStateId] = InstancePageStateRecordType.create({
 			id: InstancePageStateRecordType.createId(ps.pageId),
 			pageId: ps.pageId,
-			selectedShapeIds: ps.selectedShapeIds,
-			focusedGroupId: ps.focusedGroupId,
+			selectedIds: ps.selectedIds,
+			focusLayerId: ps.focusLayerId,
 		})
 	}
 
@@ -307,8 +307,8 @@ export function extractSessionStateFromLegacySnapshot(
 						y: camera.y,
 						z: camera.z,
 					},
-					selectedShapeIds: ps.selectedShapeIds,
-					focusedGroupId: ps.focusedGroupId,
+					selectedIds: ps.selectedIds,
+					focusLayerId: ps.focusLayerId,
 				}
 			}),
 	}

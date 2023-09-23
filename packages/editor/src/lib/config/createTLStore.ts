@@ -1,23 +1,13 @@
 import { HistoryEntry, SerializedStore, Store, StoreSchema } from '@tldraw/store'
-import {
-	SchemaShapeInfo,
-	TLRecord,
-	TLStore,
-	TLStoreProps,
-	TLUnknownShape,
-	createTLSchema,
-} from '@tldraw/tlschema'
-import { TLShapeUtilConstructor } from '../editor/shapes/ShapeUtil'
-import { TLAnyShapeUtilConstructor, checkShapesAndAddCore } from './defaultShapes'
+import { TLRecord, TLStore, TLStoreProps, createTLSchema } from '@tldraw/tlschema'
+import { checkShapesAndAddCore } from './defaultShapes'
+import { AnyTLShapeInfo, TLShapeInfo } from './defineShape'
 
 /** @public */
 export type TLStoreOptions = {
 	initialData?: SerializedStore<TLRecord>
 	defaultName?: string
-} & (
-	| { shapeUtils?: readonly TLAnyShapeUtilConstructor[] }
-	| { schema?: StoreSchema<TLRecord, TLStoreProps> }
-)
+} & ({ shapes: readonly AnyTLShapeInfo[] } | { schema: StoreSchema<TLRecord, TLStoreProps> })
 
 /** @public */
 export type TLStoreEventInfo = HistoryEntry<TLRecord>
@@ -30,16 +20,9 @@ export type TLStoreEventInfo = HistoryEntry<TLRecord>
  * @public */
 export function createTLStore({ initialData, defaultName = '', ...rest }: TLStoreOptions): TLStore {
 	const schema =
-		'schema' in rest && rest.schema
-			? // we have a schema
-			  rest.schema
-			: // we need a schema
-			  createTLSchema({
-					shapes: currentPageShapesToShapeMap(
-						checkShapesAndAddCore('shapeUtils' in rest && rest.shapeUtils ? rest.shapeUtils : [])
-					),
-			  })
-
+		'schema' in rest
+			? rest.schema
+			: createTLSchema({ shapes: shapesArrayToShapeMap(checkShapesAndAddCore(rest.shapes)) })
 	return new Store({
 		schema,
 		initialData,
@@ -49,14 +32,6 @@ export function createTLStore({ initialData, defaultName = '', ...rest }: TLStor
 	})
 }
 
-function currentPageShapesToShapeMap(shapeUtils: TLShapeUtilConstructor<TLUnknownShape>[]) {
-	return Object.fromEntries(
-		shapeUtils.map((s): [string, SchemaShapeInfo] => [
-			s.type,
-			{
-				props: s.props,
-				migrations: s.migrations,
-			},
-		])
-	)
+function shapesArrayToShapeMap(shapes: TLShapeInfo[]) {
+	return Object.fromEntries(shapes.map((s) => [s.type, s]))
 }

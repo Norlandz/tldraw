@@ -1,6 +1,30 @@
+import {
+	getIndexAbove,
+	getIndexBetween,
+	getIndices,
+	getIndicesAbove,
+	getIndicesBetween,
+	sortByIndex,
+} from '@tldraw/indices'
+import {
+	Box2d,
+	EASINGS,
+	MatLike,
+	Matrix2d,
+	Matrix2dModel,
+	PI2,
+	Vec2d,
+	VecLike,
+	approximately,
+	areAnglesCompatible,
+	clamp,
+	intersectPolygonPolygon,
+	pointInPolygon,
+} from '@tldraw/primitives'
 import { EMPTY_ARRAY, atom, computed, transact } from '@tldraw/state'
 import { ComputedCache, RecordType } from '@tldraw/store'
 import {
+	Box2dModel,
 	CameraRecordType,
 	InstancePageStateRecordType,
 	PageRecordType,
@@ -14,7 +38,6 @@ import {
 	TLDOCUMENT_ID,
 	TLDocument,
 	TLFrameShape,
-	TLGeoShape,
 	TLGroupShape,
 	TLHandle,
 	TLINSTANCE_ID,
@@ -25,12 +48,15 @@ import {
 	TLPage,
 	TLPageId,
 	TLParentId,
+	TLRecord,
+	TLScribble,
 	TLShape,
 	TLShapeId,
 	TLShapePartial,
 	TLStore,
 	TLUnknownShape,
 	TLVideoAsset,
+	Vec2dModel,
 	createShapeId,
 	getDefaultColorTheme,
 	getShapePropKeysByStyle,
@@ -47,17 +73,19 @@ import {
 	deepCopy,
 	getOwnProperty,
 	hasOwnProperty,
+	partition,
 	sortById,
 	structuredClone,
 } from '@tldraw/utils'
 import { EventEmitter } from 'eventemitter3'
+import { nanoid } from 'nanoid'
 import { TLUser, createTLUser } from '../config/createTLUser'
 import { checkShapesAndAddCore } from '../config/defaultShapes'
+import { AnyTLShapeInfo } from '../config/defineShape'
 import {
 	ANIMATION_MEDIUM_MS,
 	CAMERA_MAX_RENDERING_INTERVAL,
 	CAMERA_MOVING_TIMEOUT,
-	CAMERA_SLIDE_FRICTION,
 	COARSE_DRAG_DISTANCE,
 	COLLABORATOR_IDLE_TIMEOUT,
 	DEFAULT_ANIMATION_OPTIONS,
@@ -67,80 +95,59 @@ import {
 	FOLLOW_CHASE_PROPORTION,
 	FOLLOW_CHASE_ZOOM_SNAP,
 	FOLLOW_CHASE_ZOOM_UNSNAP,
-	HIT_TEST_MARGIN,
+	GRID_INCREMENT,
+	HAND_TOOL_FRICTION,
 	INTERNAL_POINTER_IDS,
+	MAJOR_NUDGE_FACTOR,
 	MAX_PAGES,
 	MAX_SHAPES_PER_PAGE,
 	MAX_ZOOM,
+	MINOR_NUDGE_FACTOR,
 	MIN_ZOOM,
 	SVG_PADDING,
 	ZOOMS,
 } from '../constants'
-import { Box2d } from '../primitives/Box2d'
-import { MatLike, Matrix2d, Matrix2dModel } from '../primitives/Matrix2d'
-import { Vec2d, VecLike } from '../primitives/Vec2d'
-import { EASINGS } from '../primitives/easings'
-import { Geometry2d } from '../primitives/geometry/Geometry2d'
-import { Group2d } from '../primitives/geometry/Group2d'
-import { intersectPolygonPolygon } from '../primitives/intersect'
-import { PI2, approximately, areAnglesCompatible, clamp, pointInPolygon } from '../primitives/utils'
 import { ReadonlySharedStyleMap, SharedStyle, SharedStyleMap } from '../utils/SharedStylesMap'
 import { WeakMapCache } from '../utils/WeakMapCache'
 import { dataUrlToFile } from '../utils/assets'
-import { getIncrementedName } from '../utils/getIncrementedName'
-import { getReorderingShapesChanges } from '../utils/reorderShapes'
-import {
-	getIndexAbove,
-	getIndexBetween,
-	getIndices,
-	getIndicesAbove,
-	getIndicesBetween,
-	sortByIndex,
-} from '../utils/reordering/reordering'
+import { getIncrementedName, uniqueId } from '../utils/data'
 import { applyRotationToSnapshotShapes, getRotationSnapshot } from '../utils/rotation'
-import { uniqueId } from '../utils/uniqueId'
 import { arrowBindingsIndex } from './derivations/arrowBindingsIndex'
-import { parentsToChildren } from './derivations/parentsToChildren'
+import { parentsToChildrenWithIndexes } from './derivations/parentsToChildrenWithIndexes'
 import { deriveShapeIdsInCurrentPage } from './derivations/shapeIdsInCurrentPage'
 import { ClickManager } from './managers/ClickManager'
-import { EnvironmentManager } from './managers/EnvironmentManager'
+import { ExternalContentManager, TLExternalContent } from './managers/ExternalContentManager'
 import { HistoryManager } from './managers/HistoryManager'
-import { SideEffectManager } from './managers/SideEffectManager'
 import { SnapManager } from './managers/SnapManager'
 import { TextManager } from './managers/TextManager'
 import { TickManager } from './managers/TickManager'
 import { UserPreferencesManager } from './managers/UserPreferencesManager'
-import { ShapeUtil, TLResizeMode, TLShapeUtilConstructor } from './shapes/ShapeUtil'
-import { TLArrowInfo } from './shapes/shared/arrow/arrow-types'
-import { getCurvedArrowInfo } from './shapes/shared/arrow/curved-arrow'
-import { getArrowTerminalsInArrowSpace, getIsArrowStraight } from './shapes/shared/arrow/shared'
-import { getStraightArrowInfo } from './shapes/shared/arrow/straight-arrow'
+import { ShapeUtil, TLResizeMode } from './shapes/ShapeUtil'
+import { ArrowShapeUtil } from './shapes/arrow/ArrowShapeUtil'
+import { getCurvedArrowInfo } from './shapes/arrow/arrow/curved-arrow'
+import { getArrowTerminalsInArrowSpace, getIsArrowStraight } from './shapes/arrow/arrow/shared'
+import { getStraightArrowInfo } from './shapes/arrow/arrow/straight-arrow'
+import { FrameShapeUtil } from './shapes/frame/FrameShapeUtil'
+import { GroupShapeUtil } from './shapes/group/GroupShapeUtil'
+import { SvgExportContext, SvgExportDef } from './shapes/shared/SvgExportContext'
 import { RootState } from './tools/RootState'
 import { StateNode, TLStateNodeConstructor } from './tools/StateNode'
-import { SvgExportContext, SvgExportDef } from './types/SvgExportContext'
 import { TLContent } from './types/clipboard-types'
 import { TLEventMap } from './types/emit-types'
 import { TLEventInfo, TLPinchEventInfo, TLPointerEventInfo } from './types/event-types'
-import { TLExternalAssetContent, TLExternalContent } from './types/external-content'
-import { TLCommandHistoryOptions } from './types/history-types'
-import { OptionalKeys, RequiredKeys } from './types/misc-types'
+import { RequiredKeys } from './types/misc-types'
 import { TLResizeHandle } from './types/selection-types'
 
 /** @public */
 export type TLAnimationOptions = Partial<{
 	duration: number
-	easing: (t: number) => number
+	easing: typeof EASINGS.easeInOutCubic
 }>
 
 /** @public */
-export type TLResizeShapeOptions = Partial<{
-	initialBounds: Box2d
-	scaleOrigin: VecLike
-	scaleAxisRotation: number
-	initialShape: TLShape
-	initialPageTransform: MatLike
-	dragHandle: TLResizeHandle
-	mode: TLResizeMode
+export type TLViewportOptions = Partial<{
+	/** Whether to animate the viewport change or not. Defaults to true. */
+	stopFollowing: boolean
 }>
 
 /** @public */
@@ -153,34 +160,28 @@ export interface TLEditorOptions {
 	/**
 	 * An array of shapes to use in the editor. These will be used to create and manage shapes in the editor.
 	 */
-	shapeUtils: readonly TLShapeUtilConstructor<TLUnknownShape>[]
+	shapes: readonly AnyTLShapeInfo[]
 	/**
 	 * An array of tools to use in the editor. These will be used to handle events and manage user interactions in the editor.
 	 */
 	tools: readonly TLStateNodeConstructor[]
 	/**
+	 * A user defined externally to replace the default user.
+	 */
+	user?: TLUser
+	/**
 	 * Should return a containing html element which has all the styles applied to the editor. If not
 	 * given, the body element will be used.
 	 */
 	getContainer: () => HTMLElement
-	/**
-	 * (optional) A user defined externally to replace the default user.
-	 */
-	user?: TLUser
-	/**
-	 * (optional) The editor's initial active tool (or other state node id).
-	 */
-	initialState?: string
 }
 
 /** @public */
 export class Editor extends EventEmitter<TLEventMap> {
-	constructor({ store, user, shapeUtils, tools, getContainer, initialState }: TLEditorOptions) {
+	constructor({ store, user, shapes, tools, getContainer }: TLEditorOptions) {
 		super()
 
 		this.store = store
-
-		this.snaps = new SnapManager(this)
 
 		this.user = new UserPreferencesManager(user ?? createTLUser())
 
@@ -188,25 +189,20 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		this.textMeasure = new TextManager(this)
 
-		class NewRoot extends RootState {
-			static override initial = initialState ?? ''
-		}
+		this.root = new RootState(this)
 
-		this.root = new NewRoot(this)
-		this.root.children = {}
-
-		const allShapeUtils = checkShapesAndAddCore(shapeUtils)
+		const allShapes = checkShapesAndAddCore(shapes)
 
 		const shapeTypesInSchema = new Set(
 			Object.keys(store.schema.types.shape.migrations.subTypeMigrations!)
 		)
-		for (const shapeUtil of allShapeUtils) {
-			if (!shapeTypesInSchema.has(shapeUtil.type)) {
+		for (const shape of allShapes) {
+			if (!shapeTypesInSchema.has(shape.type)) {
 				throw Error(
-					`Editor and store have different shapes: "${shapeUtil.type}" was passed into the editor but not the schema`
+					`Editor and store have different shapes: "${shape.type}" was passed into the editor but not the schema`
 				)
 			}
-			shapeTypesInSchema.delete(shapeUtil.type)
+			shapeTypesInSchema.delete(shape.type)
 		}
 		if (shapeTypesInSchema.size > 0) {
 			throw Error(
@@ -215,16 +211,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 				}" is present in the store schema but not provided to the editor`
 			)
 		}
-		const _shapeUtils = {} as Record<string, ShapeUtil<any>>
-		const _styleProps = {} as Record<string, Map<StyleProp<unknown>, string>>
+		const shapeUtils = {} as Record<string, ShapeUtil>
 		const allStylesById = new Map<string, StyleProp<unknown>>()
 
-		for (const Util of allShapeUtils) {
-			const util = new Util(this)
-			_shapeUtils[Util.type] = util
-
-			const propKeysByStyle = getShapePropKeysByStyle(Util.props ?? {})
-			_styleProps[Util.type] = propKeysByStyle
+		for (const { util: Util, props } of allShapes) {
+			const propKeysByStyle = getShapePropKeysByStyle(props ?? {})
+			shapeUtils[Util.type] = new Util(this, Util.type, propKeysByStyle)
 
 			for (const style of propKeysByStyle.keys()) {
 				if (!allStylesById.has(style.id)) {
@@ -237,346 +229,80 @@ export class Editor extends EventEmitter<TLEventMap> {
 			}
 		}
 
-		this.shapeUtils = _shapeUtils
-		this.styleProps = _styleProps
+		this.shapeUtils = shapeUtils
 
 		// Tools.
 		// Accept tools from constructor parameters which may not conflict with the root note's default or
 		// "baked in" tools, select and zoom.
-		for (const Tool of [...tools]) {
+		for (const { tool: Tool } of allShapes) {
+			if (Tool) {
+				if (hasOwnProperty(this.root.children!, Tool.id)) {
+					throw Error(`Can't override tool with id "${Tool.id}"`)
+				}
+				this.root.children![Tool.id] = new Tool(this)
+			}
+		}
+		for (const Tool of tools) {
 			if (hasOwnProperty(this.root.children!, Tool.id)) {
 				throw Error(`Can't override tool with id "${Tool.id}"`)
 			}
-			this.root.children![Tool.id] = new Tool(this, this.root)
+			this.root.children![Tool.id] = new Tool(this)
 		}
 
-		this.environment = new EnvironmentManager(this)
+		if (typeof window !== 'undefined' && 'navigator' in window) {
+			this.isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+			this.isIos = !!navigator.userAgent.match(/iPad/i) || !!navigator.userAgent.match(/iPhone/i)
+			this.isChromeForIos = /crios.*safari/i.test(navigator.userAgent)
+		} else {
+			this.isSafari = false
+			this.isIos = false
+			this.isChromeForIos = false
+		}
 
-		// Cleanup
-
-		const invalidParents = new Set<TLShapeId>()
-
-		const reparentArrow = (arrowId: TLArrowShape['id']) => {
-			const arrow = this.getShape<TLArrowShape>(arrowId)
-			if (!arrow) return
-			const { start, end } = arrow.props
-			const startShape = start.type === 'binding' ? this.getShape(start.boundShapeId) : undefined
-			const endShape = end.type === 'binding' ? this.getShape(end.boundShapeId) : undefined
-
-			const parentPageId = this.getAncestorPageId(arrow)
-			if (!parentPageId) return
-
-			let nextParentId: TLParentId
-			if (startShape && endShape) {
-				// if arrow has two bindings, always parent arrow to closest common ancestor of the bindings
-				nextParentId = this.findCommonAncestor([startShape, endShape]) ?? parentPageId
-			} else if (startShape || endShape) {
-				// if arrow has one binding, keep arrow on its own page
-				nextParentId = parentPageId
-			} else {
-				return
-			}
-
-			if (nextParentId && nextParentId !== arrow.parentId) {
-				this.reparentShapes([arrowId], nextParentId)
-			}
-
-			const reparentedArrow = this.getShape<TLArrowShape>(arrowId)
-			if (!reparentedArrow) throw Error('no reparented arrow')
-
-			const startSibling = this.getShapeNearestSibling(reparentedArrow, startShape)
-			const endSibling = this.getShapeNearestSibling(reparentedArrow, endShape)
-
-			let highestSibling: TLShape | undefined
-
-			if (startSibling && endSibling) {
-				highestSibling = startSibling.index > endSibling.index ? startSibling : endSibling
-			} else if (startSibling && !endSibling) {
-				highestSibling = startSibling
-			} else if (endSibling && !startSibling) {
-				highestSibling = endSibling
-			} else {
-				return
-			}
-
-			let finalIndex: string
-
-			const higherSiblings = this.getSortedChildIdsForParent(highestSibling.parentId)
-				.map((id) => this.getShape(id)!)
-				.filter((sibling) => sibling.index > highestSibling!.index)
-
-			if (higherSiblings.length) {
-				// there are siblings above the highest bound sibling, we need to
-				// insert between them.
-
-				// if the next sibling is also a bound arrow though, we can end up
-				// all fighting for the same indexes. so lets find the next
-				// non-arrow sibling...
-				const nextHighestNonArrowSibling = higherSiblings.find(
-					(sibling) => sibling.type !== 'arrow'
-				)
-
-				if (
-					// ...then, if we're above the last shape we want to be above...
-					reparentedArrow.index > highestSibling.index &&
-					// ...but below the next non-arrow sibling...
-					(!nextHighestNonArrowSibling || reparentedArrow.index < nextHighestNonArrowSibling.index)
-				) {
-					// ...then we're already in the right place. no need to update!
-					return
-				}
-
-				// otherwise, we need to find the index between the highest sibling
-				// we want to be above, and the next highest sibling we want to be
-				// below:
-				finalIndex = getIndexBetween(highestSibling.index, higherSiblings[0].index)
-			} else {
-				// if there are no siblings above us, we can just get the next index:
-				finalIndex = getIndexAbove(highestSibling.index)
-			}
-
-			if (finalIndex !== reparentedArrow.index) {
-				this.updateShapes<TLArrowShape>([{ id: arrowId, type: 'arrow', index: finalIndex }])
+		this.store.onBeforeDelete = (record) => {
+			if (record.typeName === 'shape') {
+				this._shapeWillBeDeleted(record)
+			} else if (record.typeName === 'page') {
+				this._pageWillBeDeleted(record)
 			}
 		}
 
-		const unbindArrowTerminal = (arrow: TLArrowShape, handleId: 'start' | 'end') => {
-			const { x, y } = getArrowTerminalsInArrowSpace(this, arrow)[handleId]
-			this.store.put([{ ...arrow, props: { ...arrow.props, [handleId]: { type: 'point', x, y } } }])
+		this.store.onAfterChange = (prev, next) => {
+			this._updateDepth++
+			if (this._updateDepth > 1000) {
+				console.error('[onAfterChange] Maximum update depth exceeded, bailing out.')
+			}
+			if (prev.typeName === 'shape' && next.typeName === 'shape') {
+				this._shapeDidChange(prev, next)
+			} else if (
+				prev.typeName === 'instance_page_state' &&
+				next.typeName === 'instance_page_state'
+			) {
+				this._pageStateDidChange(prev, next)
+			}
+
+			this._updateDepth--
 		}
-
-		const arrowDidUpdate = (arrow: TLArrowShape) => {
-			// if the shape is an arrow and its bound shape is on another page
-			// or was deleted, unbind it
-			for (const handle of ['start', 'end'] as const) {
-				const terminal = arrow.props[handle]
-				if (terminal.type !== 'binding') continue
-				const boundShape = this.getShape(terminal.boundShapeId)
-				const isShapeInSamePageAsArrow =
-					this.getAncestorPageId(arrow) === this.getAncestorPageId(boundShape)
-				if (!boundShape || !isShapeInSamePageAsArrow) {
-					unbindArrowTerminal(arrow, handle)
+		this.store.onAfterCreate = (record) => {
+			if (record.typeName === 'shape' && this.isShapeOfType(record, ArrowShapeUtil)) {
+				this._arrowDidUpdate(record)
+			}
+			if (record.typeName === 'page') {
+				const cameraId = CameraRecordType.createId(record.id)
+				const pageStateId = InstancePageStateRecordType.createId(record.id)
+				if (!this.store.has(cameraId)) {
+					this.store.put([CameraRecordType.create({ id: cameraId })])
 				}
-			}
-
-			// always check the arrow parents
-			reparentArrow(arrow.id)
-		}
-
-		const cleanupInstancePageState = (
-			prevPageState: TLInstancePageState,
-			shapesNoLongerInPage: Set<TLShapeId>
-		) => {
-			let nextPageState = null as null | TLInstancePageState
-
-			const selectedShapeIds = prevPageState.selectedShapeIds.filter(
-				(id) => !shapesNoLongerInPage.has(id)
-			)
-			if (selectedShapeIds.length !== prevPageState.selectedShapeIds.length) {
-				if (!nextPageState) nextPageState = { ...prevPageState }
-				nextPageState.selectedShapeIds = selectedShapeIds
-			}
-
-			const erasingShapeIds = prevPageState.erasingShapeIds.filter(
-				(id) => !shapesNoLongerInPage.has(id)
-			)
-			if (erasingShapeIds.length !== prevPageState.erasingShapeIds.length) {
-				if (!nextPageState) nextPageState = { ...prevPageState }
-				nextPageState.erasingShapeIds = erasingShapeIds
-			}
-
-			if (prevPageState.hoveredShapeId && shapesNoLongerInPage.has(prevPageState.hoveredShapeId)) {
-				if (!nextPageState) nextPageState = { ...prevPageState }
-				nextPageState.hoveredShapeId = null
-			}
-
-			if (prevPageState.editingShapeId && shapesNoLongerInPage.has(prevPageState.editingShapeId)) {
-				if (!nextPageState) nextPageState = { ...prevPageState }
-				nextPageState.editingShapeId = null
-			}
-
-			const hintingShapeIds = prevPageState.hintingShapeIds.filter(
-				(id) => !shapesNoLongerInPage.has(id)
-			)
-			if (hintingShapeIds.length !== prevPageState.hintingShapeIds.length) {
-				if (!nextPageState) nextPageState = { ...prevPageState }
-				nextPageState.hintingShapeIds = hintingShapeIds
-			}
-
-			if (prevPageState.focusedGroupId && shapesNoLongerInPage.has(prevPageState.focusedGroupId)) {
-				if (!nextPageState) nextPageState = { ...prevPageState }
-				nextPageState.focusedGroupId = null
-			}
-			return nextPageState
-		}
-
-		this.sideEffects = new SideEffectManager(this)
-
-		this.sideEffects.registerBatchCompleteHandler(() => {
-			for (const parentId of invalidParents) {
-				invalidParents.delete(parentId)
-				const parent = this.getShape(parentId)
-				if (!parent) continue
-
-				const util = this.getShapeUtil(parent)
-				const changes = util.onChildrenChange?.(parent)
-
-				if (changes?.length) {
-					this.updateShapes(changes, { squashing: true })
-				}
-			}
-
-			this.emit('update')
-		})
-
-		this.sideEffects.registerBeforeDeleteHandler('shape', (record) => {
-			// if the deleted shape has a parent shape make sure we call it's onChildrenChange callback
-			if (record.parentId && isShapeId(record.parentId)) {
-				invalidParents.add(record.parentId)
-			}
-			// clean up any arrows bound to this shape
-			const bindings = this._arrowBindingsIndex.value[record.id]
-			if (bindings?.length) {
-				for (const { arrowId, handleId } of bindings) {
-					const arrow = this.getShape<TLArrowShape>(arrowId)
-					if (!arrow) continue
-					unbindArrowTerminal(arrow, handleId)
-				}
-			}
-			const deletedIds = new Set([record.id])
-			const updates = compact(
-				this.pageStates.map((pageState) => {
-					return cleanupInstancePageState(pageState, deletedIds)
-				})
-			)
-
-			if (updates.length) {
-				this.store.put(updates)
-			}
-		})
-
-		this.sideEffects.registerBeforeDeleteHandler('page', (record) => {
-			// page was deleted, need to check whether it's the current page and select another one if so
-			if (this.instanceState.currentPageId !== record.id) return
-
-			const backupPageId = this.pages.find((p) => p.id !== record.id)?.id
-			if (!backupPageId) return
-			this.store.put([{ ...this.instanceState, currentPageId: backupPageId }])
-
-			// delete the camera and state for the page if necessary
-			const cameraId = CameraRecordType.createId(record.id)
-			const instance_PageStateId = InstancePageStateRecordType.createId(record.id)
-			this.store.remove([cameraId, instance_PageStateId])
-		})
-
-		this.sideEffects.registerAfterChangeHandler('shape', (prev, next) => {
-			if (this.isShapeOfType<TLArrowShape>(next, 'arrow')) {
-				arrowDidUpdate(next)
-			}
-
-			// if the shape's parent changed and it is bound to an arrow, update the arrow's parent
-			if (prev.parentId !== next.parentId) {
-				const reparentBoundArrows = (id: TLShapeId) => {
-					const boundArrows = this._arrowBindingsIndex.value[id]
-					if (boundArrows?.length) {
-						for (const arrow of boundArrows) {
-							reparentArrow(arrow.arrowId)
-						}
-					}
-				}
-				reparentBoundArrows(next.id)
-				this.visitDescendants(next.id, reparentBoundArrows)
-			}
-
-			// if this shape moved to a new page, clean up any previous page's instance state
-			if (prev.parentId !== next.parentId && isPageId(next.parentId)) {
-				const allMovingIds = new Set([prev.id])
-				this.visitDescendants(prev.id, (id) => {
-					allMovingIds.add(id)
-				})
-
-				for (const instancePageState of this.pageStates) {
-					if (instancePageState.pageId === next.parentId) continue
-					const nextPageState = cleanupInstancePageState(instancePageState, allMovingIds)
-
-					if (nextPageState) {
-						this.store.put([nextPageState])
-					}
-				}
-			}
-
-			if (prev.parentId && isShapeId(prev.parentId)) {
-				invalidParents.add(prev.parentId)
-			}
-
-			if (next.parentId !== prev.parentId && isShapeId(next.parentId)) {
-				invalidParents.add(next.parentId)
-			}
-		})
-
-		this.sideEffects.registerAfterChangeHandler('instance_page_state', (prev, next) => {
-			if (prev?.selectedShapeIds !== next?.selectedShapeIds) {
-				// ensure that descendants and ancestors are not selected at the same time
-				const filtered = next.selectedShapeIds.filter((id) => {
-					let parentId = this.getShape(id)?.parentId
-					while (isShapeId(parentId)) {
-						if (next.selectedShapeIds.includes(parentId)) {
-							return false
-						}
-						parentId = this.getShape(parentId)?.parentId
-					}
-					return true
-				})
-
-				let nextFocusedGroupId: null | TLShapeId = null
-
-				if (filtered.length > 0) {
-					const commonGroupAncestor = this.findCommonAncestor(
-						compact(filtered.map((id) => this.getShape(id))),
-						(shape) => this.isShapeOfType<TLGroupShape>(shape, 'group')
-					)
-
-					if (commonGroupAncestor) {
-						nextFocusedGroupId = commonGroupAncestor
-					}
-				} else {
-					if (next?.focusedGroupId) {
-						nextFocusedGroupId = next.focusedGroupId
-					}
-				}
-
-				if (
-					filtered.length !== next.selectedShapeIds.length ||
-					nextFocusedGroupId !== next.focusedGroupId
-				) {
+				if (!this.store.has(pageStateId)) {
 					this.store.put([
-						{ ...next, selectedShapeIds: filtered, focusedGroupId: nextFocusedGroupId ?? null },
+						InstancePageStateRecordType.create({ id: pageStateId, pageId: record.id }),
 					])
 				}
 			}
-		})
-
-		this.sideEffects.registerAfterCreateHandler('shape', (record) => {
-			if (this.isShapeOfType<TLArrowShape>(record, 'arrow')) {
-				arrowDidUpdate(record)
-			}
-		})
-
-		this.sideEffects.registerAfterCreateHandler('page', (record) => {
-			const cameraId = CameraRecordType.createId(record.id)
-			const _pageStateId = InstancePageStateRecordType.createId(record.id)
-			if (!this.store.has(cameraId)) {
-				this.store.put([CameraRecordType.create({ id: cameraId })])
-			}
-			if (!this.store.has(_pageStateId)) {
-				this.store.put([
-					InstancePageStateRecordType.create({ id: _pageStateId, pageId: record.id }),
-				])
-			}
-		})
+		}
 
 		this._currentPageShapeIds = deriveShapeIdsInCurrentPage(this.store, () => this.currentPageId)
-		this._parentIdsToChildIds = parentsToChildren(this.store)
+		this._parentIdsToChildIds = parentsToChildrenWithIndexes(this.store)
 
 		this.disposables.add(
 			this.store.listen((changes) => {
@@ -584,21 +310,37 @@ export class Editor extends EventEmitter<TLEventMap> {
 			})
 		)
 
+		const container = this.getContainer()
+		const focusin = () => {
+			this._isFocused.set(true)
+		}
+		const focusout = () => {
+			this._isFocused.set(false)
+		}
+
+		container.addEventListener('focusin', focusin)
+		container.addEventListener('focus', focusin)
+		container.addEventListener('focusout', focusout)
+		container.addEventListener('blur', focusout)
+
+		this.disposables.add(() => {
+			container.removeEventListener('focusin', focusin)
+			container.removeEventListener('focus', focusin)
+			container.removeEventListener('focusout', focusout)
+			container.removeEventListener('blur', focusout)
+		})
+
 		this.store.ensureStoreIsUsable()
 
 		// clear ephemeral state
-		this._setInstancePageState(
+		this.setPageState(
 			{
-				editingShapeId: null,
-				hoveredShapeId: null,
-				erasingShapeIds: [],
+				editingId: null,
+				hoveredId: null,
+				erasingIds: [],
 			},
-			{ ephemeral: true }
+			true
 		)
-
-		if (initialState && this.root.children[initialState] === undefined) {
-			throw Error(`No state found for initialState "${initialState}".`)
-		}
 
 		this.root.enter(undefined, 'initial')
 
@@ -637,12 +379,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 	/** @internal */
 	private _tickManager = new TickManager(this)
 
+	/** @internal */
+	private _updateDepth = 0
+
 	/**
 	 * A manager for the app's snapping feature.
 	 *
 	 * @public
 	 */
-	readonly snaps: SnapManager
+	readonly snaps = new SnapManager(this)
 
 	/**
 	 * A manager for the user and their preferences.
@@ -659,11 +404,25 @@ export class Editor extends EventEmitter<TLEventMap> {
 	readonly textMeasure: TextManager
 
 	/**
-	 * A manager for the editor's environment.
+	 * Whether the editor is running in Safari.
 	 *
 	 * @public
 	 */
-	readonly environment: EnvironmentManager
+	readonly isSafari: boolean
+
+	/**
+	 * Whether the editor is running on iOS.
+	 *
+	 * @public
+	 */
+	readonly isIos: boolean
+
+	/**
+	 * Whether the editor is running on iOS.
+	 *
+	 * @public
+	 */
+	readonly isChromeForIos: boolean
 
 	/**
 	 * The current HTML element containing the editor.
@@ -678,13 +437,6 @@ export class Editor extends EventEmitter<TLEventMap> {
 	getContainer: () => HTMLElement
 
 	/**
-	 * A manager for side effects and correct state enforcement.
-	 *
-	 * @public
-	 */
-	readonly sideEffects: SideEffectManager<this>
-
-	/**
 	 * Dispose the editor.
 	 *
 	 * @public
@@ -692,42 +444,6 @@ export class Editor extends EventEmitter<TLEventMap> {
 	dispose() {
 		this.disposables.forEach((dispose) => dispose())
 		this.disposables.clear()
-	}
-
-	/* ------------------- Shape Utils ------------------ */
-
-	/**
-	 * A map of shape utility classes (TLShapeUtils) by shape type.
-	 *
-	 * @public
-	 */
-	shapeUtils: { readonly [K in string]?: ShapeUtil<TLUnknownShape> }
-
-	styleProps: { [key: string]: Map<StyleProp<unknown>, string> }
-
-	/**
-	 * Get a shape util from a shape itself.
-	 *
-	 * @example
-	 * ```ts
-	 * const util = editor.getShapeUtil(myArrowShape)
-	 * const util = editor.getShapeUtil('arrow')
-	 * const util = editor.getShapeUtil<TLArrowShape>(myArrowShape)
-	 * const util = editor.getShapeUtil(TLArrowShape)('arrow')
-	 * ```
-	 *
-	 * @param shape - A shape, shape partial, or shape type.
-	 *
-	 * @public
-	 */
-	getShapeUtil<S extends TLUnknownShape>(shape: S | TLShapePartial<S>): ShapeUtil<S>
-	getShapeUtil<S extends TLUnknownShape>(type: S['type']): ShapeUtil<S>
-	getShapeUtil<T extends ShapeUtil>(type: T extends ShapeUtil<infer R> ? R['type'] : string): T
-	getShapeUtil(arg: string | { type: string }) {
-		const type = typeof arg === 'string' ? arg : arg.type
-		const shapeUtil = getOwnProperty(this.shapeUtils, type)
-		assert(shapeUtil, `No shape util found for type "${type}"`)
-		return shapeUtil
 	}
 
 	/* --------------------- History -------------------- */
@@ -739,7 +455,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 */
 	readonly history = new HistoryManager(
 		this,
-		// () => this._complete(),
+		() => this._complete(),
 		(error) => {
 			this.annotateError(error, { origin: 'history.batch', willCrashApp: true })
 			this.crash(error)
@@ -756,9 +472,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	undo(): this {
-		this.history.undo()
-		return this
+	undo() {
+		return this.history.undo()
 	}
 
 	/**
@@ -766,7 +481,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	@computed get canUndo(): boolean {
+	@computed get canUndo() {
 		return this.history.numUndos > 0
 	}
 
@@ -780,7 +495,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	redo(): this {
+	redo() {
 		this.history.redo()
 		return this
 	}
@@ -790,7 +505,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	@computed get canRedo(): boolean {
+	@computed get canRedo() {
 		return this.history.numRedos > 0
 	}
 
@@ -804,15 +519,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * editor.mark('flip shapes')
 	 * ```
 	 *
-	 * @param markId - The mark's id, usually the reason for adding the mark.
-	 * @param onUndo - (optional) Whether to stop at the mark when undoing.
-	 * @param onRedo - (optional) Whether to stop at the mark when redoing.
+	 * @param reason - The reason for the mark.
+	 * @param onUndo - Whether to stop at the mark when undoing.
+	 * @param onRedo - Whether to stop at the mark when redoing.
 	 *
 	 * @public
 	 */
-	mark(markId?: string, onUndo?: boolean, onRedo?: boolean): this {
-		this.history.mark(markId, onUndo, onRedo)
-		return this
+	mark(reason?: string, onUndo?: boolean, onRedo?: boolean) {
+		return this.history.mark(reason, onUndo, onRedo)
 	}
 
 	/**
@@ -835,12 +549,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.bailToMark('dragging')
+	 * editor.bailToMark('creating')
 	 * ```
 	 *
 	 * @public
 	 */
-	bailToMark(id: string): this {
+	bailToMark(id: string) {
 		this.history.bailToMark(id)
 		return this
 	}
@@ -852,7 +566,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * ```ts
 	 * editor.batch(() => {
 	 * 	editor.selectAll()
-	 * 	editor.deleteShapes(editor.selectedShapeIds)
+	 * 	editor.deleteShapes()
 	 * 	editor.createShapes(myShapes)
 	 * 	editor.selectNone()
 	 * })
@@ -862,13 +576,69 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	batch(fn: () => void): this {
+	batch(fn: () => void) {
 		this.history.batch(fn)
 		return this
 	}
 
-	/* --------------------- Arrows --------------------- */
-	// todo: move these to tldraw or replace with a bindings API
+	/* ------------------- Shape Utils ------------------ */
+
+	/**
+	 * A map of shape utility classes (TLShapeUtils) by shape type.
+	 *
+	 * @public
+	 */
+	shapeUtils: { readonly [K in string]?: ShapeUtil<TLUnknownShape> }
+
+	/**
+	 * Get a shape util by its definition.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getShapeUtil(ArrowShapeUtil)
+	 * ```
+	 *
+	 * @param util - The shape util.
+	 *
+	 * @public
+	 */
+	getShapeUtil<C extends { new (...args: any[]): ShapeUtil<any>; type: string }>(
+		util: C
+	): InstanceType<C>
+	/**
+	 * Get a shape util from a shape itself.
+	 *
+	 * @example
+	 * ```ts
+	 * const util = editor.getShapeUtil(myShape)
+	 * const util = editor.getShapeUtil<ArrowShapeUtil>(myShape)
+	 * const util = editor.getShapeUtil(ArrowShapeUtil)
+	 * ```
+	 *
+	 * @param shape - A shape or shape partial.
+	 *
+	 * @public
+	 */
+	getShapeUtil<S extends TLUnknownShape>(shape: S | TLShapePartial<S>): ShapeUtil<S>
+	getShapeUtil<T extends ShapeUtil>(shapeUtilConstructor: {
+		type: T extends ShapeUtil<infer R> ? R['type'] : string
+	}): T {
+		const shapeUtil = getOwnProperty(this.shapeUtils, shapeUtilConstructor.type) as T | undefined
+		assert(shapeUtil, `No shape util found for type "${shapeUtilConstructor.type}"`)
+
+		// does shapeUtilConstructor extends ShapeUtil?
+		if (
+			'prototype' in shapeUtilConstructor &&
+			shapeUtilConstructor.prototype instanceof ShapeUtil
+		) {
+			assert(
+				shapeUtil instanceof (shapeUtilConstructor as any),
+				`Shape util found for type "${shapeUtilConstructor.type}" is not an instance of the provided constructor`
+			)
+		}
+
+		return shapeUtil as T
+	}
 
 	/** @internal */
 	@computed
@@ -887,30 +657,265 @@ export class Editor extends EventEmitter<TLEventMap> {
 		return this._arrowBindingsIndex.value[shapeId] || EMPTY_ARRAY
 	}
 
+	/** @internal */
+	private _reparentArrow(arrowId: TLShapeId) {
+		const arrow = this.getShapeById<TLArrowShape>(arrowId)
+		if (!arrow) return
+		const { start, end } = arrow.props
+		const startShape = start.type === 'binding' ? this.getShapeById(start.boundShapeId) : undefined
+		const endShape = end.type === 'binding' ? this.getShapeById(end.boundShapeId) : undefined
+
+		const parentPageId = this.getAncestorPageId(arrow)
+		if (!parentPageId) return
+
+		let nextParentId: TLParentId
+		if (startShape && endShape) {
+			// if arrow has two bindings, always parent arrow to closest common ancestor of the bindings
+			nextParentId = this.findCommonAncestor([startShape, endShape]) ?? parentPageId
+		} else if (startShape || endShape) {
+			// if arrow has one binding, keep arrow on its own page
+			nextParentId = parentPageId
+		} else {
+			return
+		}
+
+		if (nextParentId && nextParentId !== arrow.parentId) {
+			this.reparentShapesById([arrowId], nextParentId)
+		}
+
+		const reparentedArrow = this.getShapeById<TLArrowShape>(arrowId)
+		if (!reparentedArrow) throw Error('no reparented arrow')
+
+		const startSibling = this.getShapeNearestSibling(reparentedArrow, startShape)
+		const endSibling = this.getShapeNearestSibling(reparentedArrow, endShape)
+
+		let highestSibling: TLShape | undefined
+
+		if (startSibling && endSibling) {
+			highestSibling = startSibling.index > endSibling.index ? startSibling : endSibling
+		} else if (startSibling && !endSibling) {
+			highestSibling = startSibling
+		} else if (endSibling && !startSibling) {
+			highestSibling = endSibling
+		} else {
+			return
+		}
+
+		let finalIndex: string
+
+		const higherSiblings = this.getSortedChildIds(highestSibling.parentId)
+			.map((id) => this.getShapeById(id)!)
+			.filter((sibling) => sibling.index > highestSibling!.index)
+
+		if (higherSiblings.length) {
+			// there are siblings above the highest bound sibling, we need to
+			// insert between them.
+
+			// if the next sibling is also a bound arrow though, we can end up
+			// all fighting for the same indexes. so lets find the next
+			// non-arrow sibling...
+			const nextHighestNonArrowSibling = higherSiblings.find((sibling) => sibling.type !== 'arrow')
+
+			if (
+				// ...then, if we're above the last shape we want to be above...
+				reparentedArrow.index > highestSibling.index &&
+				// ...but below the next non-arrow sibling...
+				(!nextHighestNonArrowSibling || reparentedArrow.index < nextHighestNonArrowSibling.index)
+			) {
+				// ...then we're already in the right place. no need to update!
+				return
+			}
+
+			// otherwise, we need to find the index between the highest sibling
+			// we want to be above, and the next highest sibling we want to be
+			// below:
+			finalIndex = getIndexBetween(highestSibling.index, higherSiblings[0].index)
+		} else {
+			// if there are no siblings above us, we can just get the next index:
+			finalIndex = getIndexAbove(highestSibling.index)
+		}
+
+		if (finalIndex !== reparentedArrow.index) {
+			this.updateShapes<TLArrowShape>([{ id: arrowId, type: 'arrow', index: finalIndex }])
+		}
+	}
+
+	/** @internal */
+	private _unbindArrowTerminal(arrow: TLArrowShape, handleId: 'start' | 'end') {
+		const { x, y } = getArrowTerminalsInArrowSpace(this, arrow)[handleId]
+		this.store.put([{ ...arrow, props: { ...arrow.props, [handleId]: { type: 'point', x, y } } }])
+	}
+
+	// private _shapeWillUpdate = (prev: TLShape, next: TLShape) => {
+	// 	const update = this.getShapeUtil(next).onUpdate?.(prev, next)
+	// 	return update ?? next
+	// }
+
 	@computed
-	private get arrowInfoCache() {
-		return this.store.createComputedCache<TLArrowInfo, TLArrowShape>('arrow infoCache', (shape) => {
-			return getIsArrowStraight(shape)
-				? getStraightArrowInfo(this, shape)
-				: getCurvedArrowInfo(this, shape)
-		})
+	private get _allPageStates() {
+		return this.store.query.records('instance_page_state')
+	}
+
+	/** @internal */
+	private _shapeWillBeDeleted(deletedShape: TLShape) {
+		// if the deleted shape has a parent shape make sure we call it's onChildrenChange callback
+		if (deletedShape.parentId && isShapeId(deletedShape.parentId)) {
+			this._invalidParents.add(deletedShape.parentId)
+		}
+		// clean up any arrows bound to this shape
+		const bindings = this._arrowBindingsIndex.value[deletedShape.id]
+		if (bindings?.length) {
+			for (const { arrowId, handleId } of bindings) {
+				const arrow = this.getShapeById<TLArrowShape>(arrowId)
+				if (!arrow) continue
+				this._unbindArrowTerminal(arrow, handleId)
+			}
+		}
+		const pageStates = this._allPageStates.value
+
+		const deletedIds = new Set([deletedShape.id])
+		const updates = compact(
+			pageStates.map((pageState) => {
+				return this._cleanupInstancePageState(pageState, deletedIds)
+			})
+		)
+
+		if (updates.length) {
+			this.store.put(updates)
+		}
+	}
+
+	/** @internal */
+	private _arrowDidUpdate(arrow: TLArrowShape) {
+		// if the shape is an arrow and its bound shape is on another page
+		// or was deleted, unbind it
+		for (const handle of ['start', 'end'] as const) {
+			const terminal = arrow.props[handle]
+			if (terminal.type !== 'binding') continue
+			const boundShape = this.getShapeById(terminal.boundShapeId)
+			const isShapeInSamePageAsArrow =
+				this.getAncestorPageId(arrow) === this.getAncestorPageId(boundShape)
+			if (!boundShape || !isShapeInSamePageAsArrow) {
+				this._unbindArrowTerminal(arrow, handle)
+			}
+		}
+
+		// always check the arrow parents
+		this._reparentArrow(arrow.id)
 	}
 
 	/**
-	 * Get cached info about an arrow.
+	 * _invalidParents is used to trigger the 'onChildrenChange' callback that shapes can have.
 	 *
-	 * @example
-	 * ```ts
-	 * const arrowInfo = editor.getArrowInfo(myArrow)
-	 * ```
-	 *
-	 * @param shape - The shape (or shape id) of the arrow to get the info for.
-	 *
-	 * @public
+	 * @internal
 	 */
-	getArrowInfo(shape: TLArrowShape | TLShapeId): TLArrowInfo | undefined {
-		const id = typeof shape === 'string' ? shape : shape.id
-		return this.arrowInfoCache.get(id)
+	private readonly _invalidParents = new Set<TLShapeId>()
+
+	/** @internal */
+	private _complete() {
+		for (const parentId of this._invalidParents) {
+			this._invalidParents.delete(parentId)
+			const parent = this.getShapeById(parentId)
+			if (!parent) continue
+
+			const util = this.getShapeUtil(parent)
+			const changes = util.onChildrenChange?.(parent)
+
+			if (changes?.length) {
+				this.updateShapes(changes, true)
+			}
+		}
+
+		this.emit('update')
+	}
+
+	/** @internal */
+	private _shapeDidChange(prev: TLShape, next: TLShape) {
+		if (this.isShapeOfType(next, ArrowShapeUtil)) {
+			this._arrowDidUpdate(next)
+		}
+
+		// if the shape's parent changed and it is bound to an arrow, update the arrow's parent
+		if (prev.parentId !== next.parentId) {
+			const reparentBoundArrows = (id: TLShapeId) => {
+				const boundArrows = this._arrowBindingsIndex.value[id]
+				if (boundArrows?.length) {
+					for (const arrow of boundArrows) {
+						this._reparentArrow(arrow.arrowId)
+					}
+				}
+			}
+			reparentBoundArrows(next.id)
+			this.visitDescendants(next.id, reparentBoundArrows)
+		}
+
+		// if this shape moved to a new page, clean up any previous page's instance state
+		if (prev.parentId !== next.parentId && isPageId(next.parentId)) {
+			const allMovingIds = new Set([prev.id])
+			this.visitDescendants(prev.id, (id) => {
+				allMovingIds.add(id)
+			})
+
+			for (const instancePageState of this._allPageStates.value) {
+				if (instancePageState.pageId === next.parentId) continue
+				const nextPageState = this._cleanupInstancePageState(instancePageState, allMovingIds)
+
+				if (nextPageState) {
+					this.store.put([nextPageState])
+				}
+			}
+		}
+
+		if (prev.parentId && isShapeId(prev.parentId)) {
+			this._invalidParents.add(prev.parentId)
+		}
+
+		if (next.parentId !== prev.parentId && isShapeId(next.parentId)) {
+			this._invalidParents.add(next.parentId)
+		}
+	}
+
+	/** @internal */
+	private _pageStateDidChange(prev: TLInstancePageState, next: TLInstancePageState) {
+		if (prev?.selectedIds !== next?.selectedIds) {
+			// ensure that descendants and ancestors are not selected at the same time
+			const filtered = next.selectedIds.filter((id) => {
+				let parentId = this.getShapeById(id)?.parentId
+				while (isShapeId(parentId)) {
+					if (next.selectedIds.includes(parentId)) {
+						return false
+					}
+					parentId = this.getShapeById(parentId)?.parentId
+				}
+				return true
+			})
+
+			const nextFocusLayerId =
+				filtered.length === 0
+					? next?.focusLayerId
+					: this.findCommonAncestor(compact(filtered.map((id) => this.getShapeById(id))), (shape) =>
+							this.isShapeOfType(shape, GroupShapeUtil)
+					  )
+
+			if (filtered.length !== next.selectedIds.length || nextFocusLayerId != next.focusLayerId) {
+				this.store.put([{ ...next, selectedIds: filtered, focusLayerId: nextFocusLayerId ?? null }])
+			}
+		}
+	}
+
+	/** @internal */
+	private _pageWillBeDeleted(page: TLPage) {
+		// page was deleted, need to check whether it's the current page and select another one if so
+		if (this.instanceState.currentPageId !== page.id) return
+
+		const backupPageId = this.pages.find((p) => p.id !== page.id)?.id
+		if (!backupPageId) return
+		this.store.put([{ ...this.instanceState, currentPageId: backupPageId }])
+
+		// delete the camera and state for the page if necessary
+		const cameraId = CameraRecordType.createId(page.id)
+		const instancePageStateId = InstancePageStateRecordType.createId(page.id)
+		this.store.remove([cameraId, instancePageStateId])
 	}
 
 	/* --------------------- Errors --------------------- */
@@ -929,7 +934,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			tags?: Record<string, string | boolean | number>
 			extras?: Record<string, unknown>
 		}
-	): this {
+	) {
 		const defaultAnnotations = this.createErrorAnnotations(origin, willCrashApp)
 		annotateError(error, {
 			tags: { ...defaultAnnotations.tags, ...tags },
@@ -938,7 +943,6 @@ export class Editor extends EventEmitter<TLEventMap> {
 		if (willCrashApp) {
 			this.store.markAsPossiblyCorrupted()
 		}
-		return this
 	}
 
 	/** @internal */
@@ -963,7 +967,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				extras: {
 					activeStateNode: this.root.path.value,
 					selectedShapes: this.selectedShapes,
-					editingShape: this.editingShapeId ? this.getShape(this.editingShapeId) : undefined,
+					editingShape: this.editingId ? this.getShapeById(this.editingId) : undefined,
 					inputs: this.inputs,
 				},
 			}
@@ -995,11 +999,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/** @internal */
-	crash(error: unknown): this {
+	crash(error: unknown) {
 		this._crashingError = error
 		this.store.markAsPossiblyCorrupted()
 		this.emit('crash', { error })
-		return this
 	}
 
 	/* ------------------- Statechart ------------------- */
@@ -1049,12 +1052,34 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
+	 * The id of the current selected tool.
+	 *
+	 * @public
+	 */
+	get currentToolId(): string {
+		const activeTool = this.root.current.value
+		let activeToolId = activeTool?.id
+
+		// Often a tool will transition into one of the following select states after the initial pointerdown: 'translating', 'resizing', 'dragging_handle'
+		// It should then supply the tool id to the `onInteractionEnd` property to tell us which tool initially triggered the interaction.
+		// If tool lock mode is on then tldraw will switch to the given tool id.
+		// If tool lock mode is off then tldraw will switch back to the select tool when the interaction ends.
+
+		if (activeToolId === 'select' || activeToolId === 'zoom') {
+			const currentChildState = activeTool?.current.value as any
+			activeToolId = currentChildState?.info?.onInteractionEnd ?? 'select'
+		}
+
+		return activeToolId ?? 'select'
+	}
+
+	/**
 	 * Set the selected tool.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.setCurrentTool('hand')
-	 * editor.setCurrentTool('hand', { date: Date.now() })
+	 * editor.setSelectedTool('hand')
+	 * editor.setSelectedTool('hand', { date: Date.now() })
 	 * ```
 	 *
 	 * @param id - The id of the tool to select.
@@ -1062,28 +1087,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	setCurrentTool(id: string, info = {}): this {
+	setSelectedTool(id: string, info = {}) {
 		this.root.transition(id, info)
 		return this
-	}
-	/**
-	 * The current selected tool.
-	 *
-	 * @public
-	 */
-	@computed get currentTool(): StateNode | undefined {
-		return this.root.current.value
-	}
-
-	/**
-	 * The id of the current selected tool.
-	 *
-	 * @public
-	 */
-	@computed get currentToolId(): string {
-		const { currentTool } = this
-		if (!currentTool) return ''
-		return currentTool.currentToolIdMask ?? currentTool.id
 	}
 
 	/**
@@ -1112,6 +1118,271 @@ export class Editor extends EventEmitter<TLEventMap> {
 		return state
 	}
 
+	/* ----------------- Internal State ----------------- */
+
+	/**
+	 * Blur the app, cancelling any interaction state.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.blur()
+	 * ```
+	 *
+	 * @public
+	 */
+	blur() {
+		this.complete()
+		this.getContainer().blur()
+		this._isFocused.set(false)
+		return this
+	}
+
+	/**
+	 * Focus the editor.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.focus()
+	 * ```
+	 *
+	 * @public
+	 */
+	focus() {
+		this.getContainer().focus()
+		this._isFocused.set(true)
+		return this
+	}
+
+	private _canMoveCamera = atom('can move camera', true)
+
+	/**
+	 * Whether the editor's camera can move.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.canMoveCamera = false
+	 * ```
+	 *
+	 * @param canMove - Whether the camera can move.
+	 *
+	 * @public
+	 */
+	get canMoveCamera() {
+		return this._canMoveCamera.value
+	}
+
+	set canMoveCamera(canMove: boolean) {
+		this._canMoveCamera.set(canMove)
+	}
+
+	private _isFocused = atom('_isFocused', false)
+
+	/**
+	 * Whether or not the editor is focused.
+	 *
+	 * @public
+	 */
+	get isFocused() {
+		return this._isFocused.value
+	}
+
+	/** @internal */
+	private _dpr = atom<number>(
+		'devicePixelRatio',
+		typeof window === 'undefined' ? 1 : window.devicePixelRatio
+	)
+
+	/**
+	 * The window's device pixel ratio.
+	 *
+	 * @public
+	 */
+	@computed get devicePixelRatio() {
+		return this._dpr.value
+	}
+
+	/**
+	 * Set the window's device pixel ratio. This should usually only be set by the Canvas component.
+	 *
+	 * ```ts
+	 * editor.setDevicePixelRatio(2)
+	 * ```
+	 *
+	 * @public
+	 */
+	setDevicePixelRatio(dpr: number) {
+		this._dpr.set(dpr)
+		return this
+	}
+
+	// Coarse Pointer
+
+	/** @internal */
+	private _isCoarsePointer = atom<boolean>('isCoarsePointer', false as any)
+
+	/**
+	 * Whether the user is using a "coarse" pointer, such as on a touch screen. This is automatically set by the canvas.
+	 *
+	 * @public
+	 **/
+	get isCoarsePointer() {
+		return this._isCoarsePointer.value
+	}
+
+	set isCoarsePointer(v) {
+		this._isCoarsePointer.set(v)
+	}
+
+	// Menus
+
+	private _openMenus = atom('open-menus', [] as string[])
+
+	/**
+	 * A set of strings representing any open menus. When menus are open,
+	 * certain interactions will behave differently; for example, when a
+	 * draw tool is selected and a menu is open, a pointer-down will not
+	 * create a dot (because the user is probably trying to close the menu)
+	 * however a pointer-down event followed by a drag will begin drawing
+	 * a line (because the user is BOTH trying to close the menu AND start
+	 * drawing a line).
+	 *
+	 * @public
+	 */
+	@computed get openMenus(): string[] {
+		return this._openMenus.value
+	}
+
+	/**
+	 * Add an open menu.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.addOpenMenu('menu-id')
+	 * ```
+	 *
+	 * @public
+	 */
+	addOpenMenu(id: string) {
+		const menus = new Set(this.openMenus)
+		if (!menus.has(id)) {
+			menus.add(id)
+			this._openMenus.set([...menus])
+		}
+		return this
+	}
+
+	/**
+	 * Delete an open menu.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.deleteOpenMenu('menu-id')
+	 * ```
+	 *
+	 * @public
+	 */
+	deleteOpenMenu(id: string) {
+		const menus = new Set(this.openMenus)
+		if (menus.has(id)) {
+			menus.delete(id)
+			this._openMenus.set([...menus])
+		}
+		return this
+	}
+
+	/**
+	 * Get whether any menus are open.
+	 *
+	 * @public
+	 */
+	@computed get isMenuOpen() {
+		return this.openMenus.length > 0
+	}
+
+	// Changing style
+
+	/** @internal */
+	private _isChangingStyle = atom<boolean>('isChangingStyle', false as any)
+
+	/** @internal */
+	private _isChangingStyleTimeout = -1 as any
+
+	/**
+	 * Whether the user is currently changing the style of a shape. This may cause the UI to change.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.isChangingStyle = true
+	 * ```
+	 *
+	 * @public
+	 */
+	get isChangingStyle() {
+		return this._isChangingStyle.value
+	}
+
+	set isChangingStyle(v) {
+		this._isChangingStyle.set(v)
+		// Clear any reset timeout
+		clearTimeout(this._isChangingStyleTimeout)
+		if (v) {
+			// If we've set to true, set a new reset timeout to change the value back to false after 2 seconds
+			this._isChangingStyleTimeout = setTimeout(() => (this.isChangingStyle = false), 2000)
+		}
+	}
+
+	// Pen Mode
+
+	/** @internal */
+	private _isPenMode = atom<boolean>('isPenMode', false as any)
+
+	/**
+	 * Whether the editor is in pen mode or not.
+	 *
+	 * @public
+	 **/
+	get isPenMode() {
+		return this._isPenMode.value
+	}
+
+	/**
+	 * Set whether the editor is in pen mode or not.
+	 *
+	 * @public
+	 **/
+	setPenMode(isPenMode: boolean): this {
+		if (isPenMode !== this.isPenMode) {
+			this._isPenMode.set(isPenMode)
+		}
+		return this
+	}
+
+	// Read only
+
+	private _isReadOnly = atom<boolean>('isReadOnly', false as any)
+
+	/**
+	 * Set whether the editor is in read-only mode or not.
+	 *
+	 * @public
+	 **/
+	setReadOnly(isReadOnly: boolean): this {
+		this._isReadOnly.set(isReadOnly)
+		if (isReadOnly) {
+			this.setSelectedTool('hand')
+		}
+		return this
+	}
+
+	/**
+	 * Whether the editor is in read-only mode or not.
+	 *
+	 * @public
+	 **/
+	get isReadOnly() {
+		return this._isReadOnly.value
+	}
+
 	/* ---------------- Document Settings --------------- */
 
 	/**
@@ -1128,8 +1399,116 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 **/
-	updateDocumentSettings(settings: Partial<TLDocument>): this {
+	updateDocumentSettings(settings: Partial<TLDocument>) {
 		this.store.put([{ ...this.documentSettings, ...settings }])
+	}
+
+	/**
+	 * The document's grid size.
+	 *
+	 * @public
+	 **/
+	get gridSize() {
+		return this.documentSettings.gridSize
+	}
+
+	/** @internal */
+	get projectName() {
+		return this.documentSettings.name
+	}
+
+	/** @internal */
+	setProjectName(name: string) {
+		this.updateDocumentSettings({ name })
+	}
+
+	/* ---------------------- User ---------------------- */
+
+	/**
+	 * Get the user's locale.
+	 *
+	 * @public
+	 */
+	get locale() {
+		return this.user.locale
+	}
+
+	/**
+	 * Update the user's locale. This affects which translations are used when rendering UI elements.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.setLocale('fr')
+	 * ```
+	 *
+	 * @public
+	 */
+	setLocale(locale: string) {
+		this.user.updateUserPreferences({ locale })
+	}
+
+	/**
+	 * Whether the user has "always snap" mode enabled.
+	 *
+	 * @public
+	 **/
+	get isSnapMode() {
+		return this.user.isSnapMode
+	}
+
+	/**
+	 * Set whether the user has "always snap" mode enabled.
+	 *
+	 * @public
+	 **/
+	setSnapMode(isSnapMode: boolean) {
+		if (isSnapMode !== this.isSnapMode) {
+			this.user.updateUserPreferences({ isSnapMode })
+		}
+		return this
+	}
+
+	/**
+	 * Whether the user has dark mode enabled.
+	 *
+	 * @public
+	 **/
+	get isDarkMode() {
+		return this.user.isDarkMode
+	}
+
+	/**
+	 * Set whether the user has dark mode enabled.
+	 *
+	 * @public
+	 **/
+	setDarkMode(isDarkMode: boolean) {
+		if (isDarkMode !== this.isDarkMode) {
+			this.user.updateUserPreferences({ isDarkMode })
+		}
+		return this
+	}
+
+	/**
+	 * The user's chosen animation speed.
+	 *
+	 * @public
+	 */
+	get animationSpeed() {
+		return this.user.animationSpeed
+	}
+
+	/**
+	 * Set the user's chosen animation speed.
+	 * Set to 0.0 to disable animations.
+	 * Set to 1.0 for full speed.
+	 *
+	 * @public
+	 */
+	setAnimationSpeed(animationSpeed: number): this {
+		if (animationSpeed !== this.animationSpeed) {
+			this.user.updateUserPreferences({ animationSpeed })
+		}
 		return this
 	}
 
@@ -1140,52 +1519,200 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	@computed get instanceState(): TLInstance {
+	get instanceState(): TLInstance {
 		return this.store.get(TLINSTANCE_ID)!
+	}
+
+	/**
+	 * The instance's cursor state.
+	 *
+	 * @public
+	 **/
+	get cursor() {
+		return this.instanceState.cursor
+	}
+
+	/**
+	 * The instance's brush state.
+	 *
+	 * @public
+	 **/
+	get brush() {
+		return this.instanceState.brush
+	}
+
+	/**
+	 * Set the current brush.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.setBrush({ x: 0, y: 0, w: 100, h: 100 })
+	 * editor.setBrush() // Clears the brush
+	 * ```
+	 *
+	 * @param brush - The brush box model to set, or null for no brush model.
+	 *
+	 * @public
+	 */
+	setBrush(brush: Box2dModel | null = null): this {
+		if (!brush && !this.brush) return this
+		this.updateInstanceState({ brush }, true)
+		return this
+	}
+
+	/**
+	 * The instance's zoom brush state.
+	 *
+	 * @public
+	 **/
+	get zoomBrush() {
+		return this.instanceState.zoomBrush
+	}
+
+	/**
+	 * Set the current zoom brush.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.setZoomBrush({ x: 0, y: 0, w: 100, h: 100 })
+	 * editor.setZoomBrush() // Clears the zoom
+	 * ```
+	 *
+	 * @param zoomBrush - The zoom box model to set, or null for no zoom model.
+	 *
+	 * @public
+	 */
+	setZoomBrush(zoomBrush: Box2dModel | null = null): this {
+		if (!zoomBrush && !this.zoomBrush) return this
+		this.updateInstanceState({ zoomBrush }, true)
+		return this
+	}
+
+	/**
+	 * The instance's scribble state.
+	 *
+	 * @public
+	 **/
+	get scribble() {
+		return this.instanceState.scribble
+	}
+
+	/**
+	 * Set the current scribble.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.setScribble(nextScribble)
+	 * editor.setScribble() // clears the scribble
+	 * ```
+	 *
+	 * @param scribble - The new scribble object.
+	 *
+	 * @public
+	 */
+	setScribble(scribble: TLScribble | null = null): this {
+		this.updateInstanceState({ scribble }, true)
+		return this
+	}
+
+	// Focus Mode
+
+	/**
+	 * Whether the instance is in focus mode or not.
+	 *
+	 * @public
+	 **/
+	get isFocusMode() {
+		return this.instanceState.isFocusMode
+	}
+
+	/**
+	 * Set whether the instance is in focus mode or not.
+	 *
+	 * @public
+	 **/
+	setFocusMode(isFocusMode: boolean): this {
+		if (isFocusMode !== this.isFocusMode) {
+			this.updateInstanceState({ isFocusMode }, true)
+		}
+		return this
+	}
+
+	// Tool Locked
+
+	/**
+	 * Whether the instance has "tool lock" mode enabled.
+	 *
+	 * @public
+	 **/
+	get isToolLocked() {
+		return this.instanceState.isToolLocked
+	}
+
+	/**
+	 * Set whether the instance has "tool lock" mode enabled.
+	 *
+	 * @public
+	 **/
+	setToolLocked(isToolLocked: boolean): this {
+		if (isToolLocked !== this.isToolLocked) {
+			this.updateInstanceState({ isToolLocked }, true)
+		}
+		return this
+	}
+
+	// Grid Mode
+
+	/**
+	 * Whether the instance's grid is enabled.
+	 *
+	 * @public
+	 **/
+	get isGridMode() {
+		return this.instanceState.isGridMode
+	}
+
+	/**
+	 * Set whether the instance's grid is enabled.
+	 *
+	 * @public
+	 **/
+	setGridMode(isGridMode: boolean): this {
+		if (isGridMode !== this.isGridMode) {
+			this.updateInstanceState({ isGridMode }, true)
+		}
+		return this
 	}
 
 	/**
 	 * Update the instance's state.
 	 *
 	 * @param partial - A partial object to update the instance state with.
-	 * @param historyOptions - (optional) The history options for the change.
+	 * @param ephemeral - Whether the change is ephemeral. Ephemeral changes don't get added to the undo/redo stack. Defaults to false.
+	 * @param squashing - Whether the change will be squashed into the existing history entry rather than creating a new one. Defaults to false.
 	 *
 	 * @public
 	 */
 	updateInstanceState(
 		partial: Partial<Omit<TLInstance, 'currentPageId'>>,
-		historyOptions?: TLCommandHistoryOptions
-	): this {
-		this._updateInstanceState(partial, { ephemeral: true, squashing: true, ...historyOptions })
-
-		if (partial.isChangingStyle !== undefined) {
-			clearTimeout(this._isChangingStyleTimeout)
-			if (partial.isChangingStyle === true) {
-				// If we've set to true, set a new reset timeout to change the value back to false after 2 seconds
-				this._isChangingStyleTimeout = setTimeout(() => {
-					this.updateInstanceState({ isChangingStyle: false })
-				}, 2000)
-			}
-		}
-
+		ephemeral = false,
+		squashing = false
+	) {
+		this._updateInstanceState(partial, ephemeral, squashing)
 		return this
 	}
 
 	/** @internal */
 	private _updateInstanceState = this.history.createCommand(
-		'updateInstanceState',
-		(
-			partial: Partial<Omit<TLInstance, 'currentPageId'>>,
-			historyOptions?: TLCommandHistoryOptions
-		) => {
-			const prev = this.store.get(this.instanceState.id)!
+		'updateTabState',
+		(partial: Partial<Omit<TLInstance, 'currentPageId'>>, ephemeral = false, squashing = false) => {
+			const prev = this.instanceState
 			const next = { ...prev, ...partial }
 
 			return {
 				data: { prev, next },
-				ephemeral: false,
-				squashing: false,
-				...historyOptions,
+				squashing,
+				ephemeral,
 			}
 		},
 		{
@@ -1201,109 +1728,64 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 	)
 
-	/** @internal */
-	private _isChangingStyleTimeout = -1 as any
-
-	// Menus
-
 	/**
-	 * A set of strings representing any open menus. When menus are open,
-	 * certain interactions will behave differently; for example, when a
-	 * draw tool is selected and a menu is open, a pointer-down will not
-	 * create a dot (because the user is probably trying to close the menu)
-	 * however a pointer-down event followed by a drag will begin drawing
-	 * a line (because the user is BOTH trying to close the menu AND start
-	 * drawing a line).
-	 *
-	 * @public
-	 */
-	@computed get openMenus(): string[] {
-		return this.instanceState.openMenus
-	}
-
-	/**
-	 * Add an open menu.
+	 * Set the current cursor.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.addOpenMenu('menu-id')
+	 * editor.setCursor({ type: 'default' })
+	 * editor.setCursor({ type: 'default', rotation: Math.PI / 2, color: 'red' })
 	 * ```
+	 *
+	 * @param cursor - A partial of the cursor object.
 	 *
 	 * @public
 	 */
-	addOpenMenu(id: string): this {
-		const menus = new Set(this.openMenus)
-		if (!menus.has(id)) {
-			menus.add(id)
-			this.updateInstanceState({ openMenus: [...menus] })
+	setCursor(cursor: Partial<TLCursor>): this {
+		const current = this.cursor
+		const next = {
+			...current,
+			rotation: 0,
+			...cursor,
 		}
-		return this
-	}
 
-	/**
-	 * Delete an open menu.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.deleteOpenMenu('menu-id')
-	 * ```
-	 *
-	 * @public
-	 */
-	deleteOpenMenu(id: string): this {
-		const menus = new Set(this.openMenus)
-		if (menus.has(id)) {
-			menus.delete(id)
-			this.updateInstanceState({ openMenus: [...menus] })
+		if (
+			!(
+				current.type === next.type &&
+				current.rotation === next.rotation &&
+				current.color === next.color
+			)
+		) {
+			this.updateInstanceState({ cursor: next }, true)
 		}
-		return this
-	}
 
-	/**
-	 * Get whether any menus are open.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.isMenuOpen()
-	 * ```
-	 *
-	 * @public
-	 */
-	@computed get isMenuOpen(): boolean {
-		return this.openMenus.length > 0
-	}
-
-	/* --------------------- Cursor --------------------- */
-
-	/**
-	 * Set the cursor.
-	 *
-	 * @param type - The cursor type.
-	 * @param rotation - The cursor rotation.
-	 *
-	 * @public
-	 */
-	setCursor = (cursor: Partial<TLCursor>): this => {
-		this.updateInstanceState(
-			{ cursor: { ...this.instanceState.cursor, ...cursor } },
-			{ ephemeral: true }
-		)
 		return this
 	}
 
 	/* ------------------- Page State ------------------- */
 
-	/**
-	 * Page states.
-	 *
-	 * @public
-	 */
-	@computed get pageStates(): TLInstancePageState[] {
-		return this._pageStates.value
-	}
 	/** @internal */
 	@computed private get _pageStates() {
 		return this.store.query.records('instance_page_state')
+	}
+
+	/**
+	 * Get a page state by its id.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPageStateByPageId('page1')
+	 * ```
+	 *
+	 * @public
+	 */
+	getPageStateByPageId(id: TLPageId) {
+		return this._pageStates.value.find((p) => p.pageId === id)
+	}
+
+	/** @internal */
+	@computed private get pageStateId() {
+		return InstancePageStateRecordType.createId(this.currentPageId)
 	}
 
 	/**
@@ -1311,47 +1793,34 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	@computed get currentPageState(): TLInstancePageState {
-		return this.store.get(this._currentPageStateId)!
-	}
-	/** @internal */
-	@computed private get _currentPageStateId() {
-		return InstancePageStateRecordType.createId(this.currentPageId)
+	@computed get pageState(): TLInstancePageState {
+		return this.store.get(this.pageStateId)!
 	}
 
 	/**
-	 * Update this instance's page state.
+	 * Update a page state.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.updateInstancePageState({ id: 'page1', editingShapeId: 'shape:123' })
-	 * editor.updateInstancePageState({ id: 'page1', editingShapeId: 'shape:123' }, { ephemeral: true })
+	 * editor.setPageState({ id: 'page1', editingId: 'shape:123' })
+	 * editor.setPageState({ id: 'page1', editingId: 'shape:123' }, true)
 	 * ```
 	 *
 	 * @param partial - The partial of the page state object containing the changes.
-	 * @param historyOptions - (optional) The history options for the change.
+	 * @param ephemeral - Whether the command is ephemeral.
 	 *
 	 * @public
 	 */
-	updateCurrentPageState(
-		partial: Partial<
-			Omit<TLInstancePageState, 'selectedShapeIds' | 'editingShapeId' | 'pageId' | 'focusedGroupId'>
-		>,
-		historyOptions?: TLCommandHistoryOptions
-	): this {
-		this._setInstancePageState(partial, historyOptions)
-		return this
+	setPageState(partial: Partial<TLInstancePageState>, ephemeral = false) {
+		this._setInstancePageState(partial, ephemeral)
 	}
 
 	/** @internal */
 	private _setInstancePageState = this.history.createCommand(
 		'setInstancePageState',
-		(
-			partial: Partial<Omit<TLInstancePageState, 'selectedShapeIds'>>,
-			historyOptions?: TLCommandHistoryOptions
-		) => {
-			const prev = this.store.get(partial.id ?? this.currentPageState.id)!
-			return { data: { prev, partial }, ...historyOptions }
+		(partial: Partial<TLInstancePageState>, ephemeral = false) => {
+			const prev = this.store.get(partial.id ?? this.pageState.id)!
+			return { data: { prev, partial }, ephemeral }
 		},
 		{
 			do: ({ prev, partial }) => {
@@ -1363,29 +1832,24 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 	)
 
+	// Selected Ids
+
 	/**
 	 * The current selected ids.
 	 *
 	 * @public
 	 */
-	@computed get selectedShapeIds() {
-		return this.currentPageState.selectedShapeIds
+	@computed get selectedIds() {
+		return this.pageState.selectedIds
 	}
 
 	/**
-	 * An array containing all of the currently selected shapes.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.selectedShapes
-	 * ```
+	 * The current selected ids as a set
 	 *
 	 * @public
-	 * @readonly
 	 */
-	@computed get selectedShapes(): TLShape[] {
-		const { selectedShapeIds } = this.currentPageState
-		return compact(selectedShapeIds.map((id) => this.store.get(id)))
+	@computed get selectedIdsSet(): ReadonlySet<TLShapeId> {
+		return new Set(this.selectedIds)
 	}
 
 	/**
@@ -1393,73 +1857,80 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.setSelectedShapes(['id1'])
-	 * editor.setSelectedShapes(['id1', 'id2'])
+	 * editor.setSelectedIds(['id1'])
+	 * editor.setSelectedIds(['id1', 'id2'])
 	 * ```
 	 *
 	 * @param ids - The ids to select.
-	 * @param historyOptions - The history options for the change.
+	 * @param squashing - Whether the change should create a new history entry or combine with the
+	 *   previous (if the previous is the same type).
 	 *
 	 * @public
 	 */
-	setSelectedShapes(
-		shapes: TLShapeId[] | TLShape[],
-		historyOptions?: TLCommandHistoryOptions
-	): this {
-		const ids = shapes.map((shape) => (typeof shape === 'string' ? shape : shape.id))
-		this._setSelectedShapes(ids, historyOptions)
+	setSelectedIds(ids: TLShapeId[], squashing = false) {
+		this._setSelectedIds(ids, squashing)
 		return this
 	}
 
 	/** @internal */
-	private _setSelectedShapes = this.history.createCommand(
-		'setSelectedShapes',
-		(ids: TLShapeId[], historyOptions?: TLCommandHistoryOptions) => {
-			const { selectedShapeIds: prevSelectedShapeIds } = this.currentPageState
-			const prevSet = new Set(prevSelectedShapeIds)
+	private _setSelectedIds = this.history.createCommand(
+		'setSelectedIds',
+		(ids: TLShapeId[], squashing = false) => {
+			const prevSelectedIds = this.pageState.selectedIds
+
+			const prevSet = new Set(this.pageState.selectedIds)
 
 			if (ids.length === prevSet.size && ids.every((id) => prevSet.has(id))) return null
 
-			return {
-				data: { selectedShapeIds: ids, prevSelectedShapeIds },
-				preservesRedoStack: true,
-				...historyOptions,
-			}
+			return { data: { ids, prevSelectedIds }, squashing, preservesRedoStack: true }
 		},
 		{
-			do: ({ selectedShapeIds }) => {
-				this.store.put([{ ...this.currentPageState, selectedShapeIds }])
+			do: ({ ids }) => {
+				this.store.update(this.pageState.id, (state) => ({ ...state, selectedIds: ids }))
 			},
-			undo: ({ prevSelectedShapeIds }) => {
-				this.store.put([
-					{
-						...this.currentPageState,
-						selectedShapeIds: prevSelectedShapeIds,
-					},
-				])
+			undo: ({ prevSelectedIds }) => {
+				this.store.update(this.pageState.id, () => ({
+					...this.pageState,
+					selectedIds: prevSelectedIds,
+				}))
 			},
-			squash({ prevSelectedShapeIds }, { selectedShapeIds }) {
-				return {
-					selectedShapeIds,
-					prevSelectedShapeIds,
-				}
+			squash(prev, next) {
+				return { ids: next.ids, prevSelectedIds: prev.prevSelectedIds }
 			},
 		}
 	)
 
 	/**
-	 * Determine whether or not any of a shape's ancestors are selected.
+	 * Determine whether or not a shape is selected
+	 *
+	 * @example
+	 * ```ts
+	 * editor.isSelected('id1')
+	 * ```
 	 *
 	 * @param id - The id of the shape to check.
 	 *
 	 * @public
 	 */
-	isAncestorSelected(shape: TLShape | TLShapeId): boolean {
-		const id = typeof shape === 'string' ? shape : shape?.id ?? null
-		const _shape = this.getShape(id)
-		if (!_shape) return false
-		const { selectedShapeIds } = this
-		return !!this.findShapeAncestor(_shape, (parent) => selectedShapeIds.includes(parent.id))
+	isSelected(id: TLShapeId) {
+		return this.selectedIdsSet.has(id)
+	}
+
+	/**
+	 * Determine whether a not a shape is within the current selection. A shape is within the
+	 * selection if it or any of its parents is selected.
+	 *
+	 * @param id - The id of the shape to check.
+	 *
+	 * @public
+	 */
+	isWithinSelection(id: TLShapeId) {
+		const shape = this.getShapeById(id)
+		if (!shape) return false
+
+		if (this.isSelected(id)) return true
+
+		return !!this.findAncestor(shape, (parent) => this.isSelected(parent.id))
 	}
 
 	/**
@@ -1475,12 +1946,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	select(...shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((shape) => shape.id)
-		this.setSelectedShapes(ids)
+	select(...ids: TLShapeId[]) {
+		this.setSelectedIds(ids)
 		return this
 	}
 
@@ -1494,14 +1961,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	deselect(...shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((shape) => shape.id)
-		const { selectedShapeIds } = this
-		if (selectedShapeIds.length > 0 && ids.length > 0) {
-			this.setSelectedShapes(selectedShapeIds.filter((id) => !ids.includes(id)))
+	deselect(...ids: TLShapeId[]) {
+		const { selectedIds } = this
+		if (selectedIds.length > 0 && ids.length > 0) {
+			this.setSelectedIds(selectedIds.filter((id) => !ids.includes(id)))
 		}
 		return this
 	}
@@ -1516,11 +1979,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	selectAll(): this {
-		const ids = this.getSortedChildIdsForParent(this.currentPageId)
+	selectAll() {
+		const ids = this.getSortedChildIds(this.currentPageId)
 		// page might have no shapes
 		if (ids.length <= 0) return this
-		this.setSelectedShapes(this._getUnlockedShapeIds(ids))
+		this.setSelectedIds(this._getUnlockedShapeIds(ids))
 
 		return this
 	}
@@ -1536,11 +1999,27 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	selectNone(): this {
-		if (this.selectedShapeIds.length > 0) {
-			this.setSelectedShapes([])
+		if (this.selectedIds.length > 0) {
+			this.setSelectedIds([])
 		}
 
 		return this
+	}
+
+	/**
+	 * An array containing all of the currently selected shapes.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.selectedShapes
+	 * ```
+	 *
+	 * @public
+	 * @readonly
+	 */
+	@computed get selectedShapes(): TLShape[] {
+		const { selectedIds } = this.pageState
+		return compact(selectedIds.map((id) => this.store.get(id)))
 	}
 
 	/**
@@ -1563,183 +2042,140 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * The current page bounds of all the selected shapes. If the
-	 * selection is rotated, then these bounds are the axis-aligned
-	 * box that the rotated bounds would fit inside of.
+	 * The current page bounds of all the selected shapes (Not the same thing as the page bounds of
+	 * the selection bounding box when the selection has been rotated)
 	 *
 	 * @readonly
 	 *
 	 * @public
 	 */
-	@computed get selectionPageBounds(): Box2d | null {
+	@computed get selectedPageBounds(): Box2d | null {
 		const {
-			currentPageState: { selectedShapeIds },
+			pageState: { selectedIds },
 		} = this
 
-		if (selectedShapeIds.length === 0) return null
+		if (selectedIds.length === 0) return null
 
-		return Box2d.Common(compact(selectedShapeIds.map((id) => this.getShapePageBounds(id))))
+		return Box2d.Common(compact(selectedIds.map((id) => this.getPageBoundsById(id))))
 	}
 
 	/**
-	 * The rotation of the selection bounding box in the current page space.
+	 * The rotation of the selection bounding box.
 	 *
 	 * @readonly
 	 * @public
 	 */
 	@computed get selectionRotation(): number {
-		const { selectedShapeIds } = this
-		if (selectedShapeIds.length === 0) {
+		const { selectedIds } = this
+		if (selectedIds.length === 0) {
 			return 0
 		}
-		if (selectedShapeIds.length === 1) {
-			return this.getShapePageTransform(this.selectedShapeIds[0])!.rotation()
+		if (selectedIds.length === 1) {
+			return this.getPageRotationById(this.selectedIds[0])
 		}
 
-		const allRotations = selectedShapeIds.map((id) => this.getShapePageTransform(id)!.rotation())
+		const allRotations = selectedIds.map((id) => this.getPageRotationById(id) % (Math.PI / 2))
 		// if the rotations are all compatible with each other, return the rotation of any one of them
 		if (allRotations.every((rotation) => Math.abs(rotation - allRotations[0]) < Math.PI / 180)) {
-			return this.getShapePageTransform(selectedShapeIds[0])!.rotation()
+			return this.getPageRotationById(selectedIds[0])
 		}
 		return 0
 	}
 
 	/**
-	 * The bounds of the selection bounding box in the current page space.
+	 * The bounds of the selection bounding box.
 	 *
 	 * @readonly
 	 * @public
 	 */
-	@computed get selectionRotatedPageBounds(): Box2d | undefined {
-		const { selectedShapeIds } = this
+	@computed get selectionBounds(): Box2d | undefined {
+		const { selectedIds } = this
 
-		if (selectedShapeIds.length === 0) {
+		if (selectedIds.length === 0) {
 			return undefined
 		}
 
 		const { selectionRotation } = this
 		if (selectionRotation === 0) {
-			return this.selectionPageBounds!
+			return this.selectedPageBounds!
 		}
 
-		if (selectedShapeIds.length === 1) {
-			const bounds = this.getShapeGeometry(selectedShapeIds[0]).bounds.clone()
-			const pageTransform = this.getShapePageTransform(selectedShapeIds[0])!
-			bounds.point = pageTransform.applyToPoint(bounds.point)
+		if (selectedIds.length === 1) {
+			const bounds = this.getBounds(this.getShapeById(selectedIds[0])!).clone()
+			bounds.point = Matrix2d.applyToPoint(this.getPageTransformById(selectedIds[0])!, bounds.point)
 			return bounds
 		}
 
 		// need to 'un-rotate' all the outlines of the existing nodes so we can fit them inside a box
-		const boxFromRotatedVertices = Box2d.FromPoints(
-			this.selectedShapeIds
-				.flatMap((id) => {
-					const pageTransform = this.getShapePageTransform(id)
-					if (!pageTransform) return []
-					return pageTransform.applyToPoints(this.getShapeGeometry(id).vertices)
-				})
-				.map((p) => Vec2d.Rot(p, -selectionRotation))
-		)
+		const allPoints = this.selectedIds
+			.flatMap((id) => {
+				const pageTransform = this.getPageTransformById(id)
+				if (!pageTransform) return []
+				return this.getOutlineById(id).map((point) => Matrix2d.applyToPoint(pageTransform, point))
+			})
+			.map((p) => Vec2d.Rot(p, -selectionRotation))
+		const box = Box2d.FromPoints(allPoints)
 		// now position box so that it's top-left corner is in the right place
-		boxFromRotatedVertices.point = boxFromRotatedVertices.point.rot(selectionRotation)
-		return boxFromRotatedVertices
-	}
-
-	// Focus Group
-
-	/**
-	 * The current focused group id.
-	 *
-	 * @public
-	 */
-	@computed get focusedGroupId(): TLShapeId | TLPageId {
-		return this.currentPageState.focusedGroupId ?? this.currentPageId
+		box.point = box.point.rot(selectionRotation)
+		return box
 	}
 
 	/**
-	 * The current focused group.
+	 * The center of the selection bounding box.
+	 *
+	 * @readonly
+	 * @public
+	 */
+	@computed get selectionPageCenter() {
+		const { selectionBounds, selectionRotation } = this
+		if (!selectionBounds) return null
+		return Vec2d.RotWith(selectionBounds.center, selectionBounds.point, selectionRotation)
+	}
+
+	// Focus Layer Id
+
+	/**
+	 * The shape id of the current focus layer.
 	 *
 	 * @public
 	 */
-	@computed get focusedGroup(): TLShape | undefined {
-		const { focusedGroupId } = this
-		return focusedGroupId ? this.getShape(focusedGroupId) : undefined
+	get focusLayerId() {
+		return this.pageState.focusLayerId ?? this.currentPageId
 	}
 
 	/**
-	 * Set the current focused group shape.
-	 *
-	 * @param shape - The group shape id (or group shape's id) to set as the focused group shape.
+	 * The shape of the current focus layer.
 	 *
 	 * @public
 	 */
-	setFocusedGroup(shape: TLShapeId | TLGroupShape | null): this {
-		const id = typeof shape === 'string' ? shape : shape?.id ?? null
-
-		if (id !== null) {
-			const shape = this.getShape(id)
-			if (!shape) {
-				throw Error(`Editor.setFocusedGroup: Shape with id ${id} does not exist`)
-			}
-
-			if (!this.isShapeOfType<TLGroupShape>(shape, 'group')) {
-				throw Error(
-					`Editor.setFocusedGroup: Cannot set focused group to shape of type ${shape.type}`
-				)
-			}
+	get focusLayerShape(): TLShape | undefined {
+		const id = this.pageState.focusLayerId
+		if (!id) {
+			return
 		}
-
-		if (id === this.focusedGroupId) return this
-		this._setFocusedGroupId(id)
-		return this
+		return this.getShapeById(id)
 	}
 
-	/** @internal */
-	private _setFocusedGroupId = this.history.createCommand(
-		'setFocusedGroupId',
-		(next: TLShapeId | null) => {
-			const prev = this.currentPageState.focusedGroupId
-			if (prev === next) return
-			return {
-				data: {
-					prev,
-					next,
-				},
-				preservesRedoStack: true,
-				squashing: true,
-			}
-		},
-		{
-			do: ({ next }) => {
-				this.store.update(this.currentPageState.id, (s) => ({ ...s, focusedGroupId: next }))
-			},
-			undo: ({ prev }) => {
-				this.store.update(this.currentPageState.id, (s) => ({ ...s, focusedGroupId: prev }))
-			},
-			squash({ prev }, { next }) {
-				return { prev, next }
-			},
-		}
-	)
-
 	/**
-	 * Exit the current focused group, moving up to the next parent group if there is one.
+	 * Exit the current focus layer, moving up to the next group if there is one.
 	 *
 	 * @public
 	 */
-	popFocusedGroupId(): this {
-		const { focusedGroup } = this
+	popFocusLayer() {
+		const current = this.pageState.focusLayerId
+		const focusedShape = current && this.getShapeById(current)
 
-		if (focusedGroup) {
+		if (focusedShape) {
 			// If we have a focused layer, look for an ancestor of the focused shape that is a group
-			const match = this.findShapeAncestor(focusedGroup, (shape) =>
-				this.isShapeOfType<TLGroupShape>(shape, 'group')
+			const match = this.findAncestor(focusedShape, (shape) =>
+				this.isShapeOfType(shape, GroupShapeUtil)
 			)
 			// If we have an ancestor that can become a focused layer, set it as the focused layer
-			this.setFocusedGroup(match?.id ?? null)
-			this.select(focusedGroup.id)
+			this.setFocusLayer(match?.id ?? null)
+			this.select(focusedShape.id)
 		} else {
-			// If there's no parent focused group, then clear the focus layer and clear selection
-			this.setFocusedGroup(null)
+			// If there's no focused shape, then clear the focus layer and clear selection
+			this.setFocusLayer(null)
 			this.selectNone()
 		}
 
@@ -1747,55 +2183,81 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
+	 * Set the focus layer to the given shape id.
+	 *
+	 * @param next - The next focus layer id or null to reset the focus layer to the page
+	 *
+	 * @public
+	 */
+	setFocusLayer(next: null | TLShapeId) {
+		this._setFocusLayer(next)
+		return this
+	}
+
+	/** @internal */
+	private _setFocusLayer = this.history.createCommand(
+		'setFocusLayer',
+		(next: null | TLShapeId) => {
+			// When we first click an empty canvas we don't want this to show up in the undo stack
+			if (next === null && !this.canUndo) {
+				return
+			}
+			const prev = this.pageState.focusLayerId
+			return { data: { prev, next }, preservesRedoStack: true, squashing: true }
+		},
+		{
+			do: ({ next }) => {
+				this.store.update(this.pageState.id, (s) => ({ ...s, focusLayerId: next }))
+			},
+			undo: ({ prev }) => {
+				this.store.update(this.pageState.id, (s) => ({ ...s, focusLayerId: prev }))
+			},
+			squash({ prev }, { next }) {
+				return { prev, next }
+			},
+		}
+	)
+
+	// Editing Id
+
+	/**
 	 * The current editing shape's id.
 	 *
 	 * @public
 	 */
-	@computed get editingShapeId() {
-		return this.currentPageState.editingShapeId
+	get editingId() {
+		return this.pageState.editingId
 	}
 
 	/**
-	 * The current editing shape.
+	 * Set the current editing id.
+	 *
+	 * @param id - The id of the shape to edit or null to clear the editing id.
 	 *
 	 * @public
 	 */
-	@computed get editingShape(): TLShape | undefined {
-		const { editingShapeId } = this
-		return editingShapeId ? this.getShape(editingShapeId) : undefined
-	}
-
-	/**
-	 * Set the current editing shape.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.setEditingShape(myShape)
-	 * editor.setEditingShape(myShape.id)
-	 * ```
-	 *
-	 * @param shape - The shape (or shape id) to set as editing.
-	 *
-	 * @public
-	 */
-	setEditingShape(shape: TLShapeId | TLShape | null): this {
-		const id = typeof shape === 'string' ? shape : shape?.id ?? null
-		if (id !== this.editingShapeId) {
-			if (id) {
-				const shape = this.getShape(id)
-				if (shape && this.getShapeUtil(shape).canEdit(shape)) {
-					this._setInstancePageState({ editingShapeId: id })
-					return this
+	setEditingId(id: TLShapeId | null): this {
+		if (!id) {
+			this.setPageState({ editingId: null })
+		} else {
+			if (id !== this.editingId) {
+				const shape = this.getShapeById(id)!
+				const util = this.getShapeUtil(shape)
+				if (shape && util.canEdit(shape)) {
+					this.setPageState({ editingId: id, hoveredId: null }, false)
 				}
 			}
-
-			// Either we just set the editing id to null, or the shape was missing or not editable
-			this._setInstancePageState({ editingShapeId: null })
 		}
+
 		return this
 	}
 
-	// Hovered
+	@computed get editingShape() {
+		if (!this.editingId) return null
+		return this.getShapeById(this.editingId) ?? null
+	}
+
+	// Hovered Id
 
 	/**
 	 * The current hovered shape id.
@@ -1803,182 +2265,183 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @readonly
 	 * @public
 	 */
-	@computed get hoveredShapeId() {
-		return this.currentPageState.hoveredShapeId
+	@computed get hoveredId() {
+		return this.pageState.hoveredId
+	}
+
+	/**
+	 * Set the current hovered shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.setHoveredId('box1')
+	 * editor.setHoveredId() // Clears the hovered shape.
+	 * ```
+	 *
+	 * @param id - The id of the page to set as the current page
+	 *
+	 * @public
+	 */
+	setHoveredId(id: TLShapeId | null = null): this {
+		if (id === this.pageState.hoveredId) return this
+
+		this.setPageState({ hoveredId: id }, true)
+		return this
 	}
 
 	/**
 	 * The current hovered shape.
 	 *
+	 * @readonly
 	 * @public
 	 */
-	@computed get hoveredShape(): TLShape | undefined {
-		const { hoveredShapeId } = this
-		return hoveredShapeId ? this.getShape(hoveredShapeId) : undefined
+	@computed get hoveredShape() {
+		if (!this.hoveredId) return null
+		return this.getShapeById(this.hoveredId) ?? null
+	}
+
+	// Hinting ids
+
+	/**
+	 * The editor's current hinting ids.
+	 *
+	 * @public
+	 */
+	@computed get hintingIds() {
+		return this.pageState.hintingIds
 	}
 
 	/**
-	 * Set the editor's current hovered shape.
+	 * Set the hinted shape ids.
 	 *
-	 * @example
-	 * ```ts
-	 * editor.setHoveredShape(myShape)
-	 * editor.setHoveredShape(myShape.id)
-	 * ```
-	 *
-	 * @param shapes - The shape (or shape id) to set as hovered.
+	 * @param ids - The ids to set as hinted.
 	 *
 	 * @public
 	 */
-	setHoveredShape(shape: TLShapeId | TLShape | null): this {
-		const id = typeof shape === 'string' ? shape : shape?.id ?? null
-		if (id === this.hoveredShapeId) return this
-		this.updateCurrentPageState({ hoveredShapeId: id }, { ephemeral: true })
-		return this
-	}
-
-	// Hinting
-
-	/**
-	 * The editor's current hinting shape ids.
-	 *
-	 * @public
-	 */
-	@computed get hintingShapeIds() {
-		return this.currentPageState.hintingShapeIds
-	}
-
-	/**
-	 * The editor's current hinting shapes.
-	 *
-	 * @public
-	 */
-	@computed get hintingShapes() {
-		const { hintingShapeIds } = this
-		return compact(hintingShapeIds.map((id) => this.getShape(id)))
-	}
-
-	/**
-	 * Set the editor's current hinting shapes.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.setHintingShapes([myShape])
-	 * editor.setHintingShapes([myShape.id])
-	 * ```
-	 *
-	 * @param shapes - The shapes (or shape ids) to set as hinting.
-	 *
-	 * @public
-	 */
-	setHintingShapes(shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((shape) => shape.id)
+	setHintingIds(ids: TLShapeId[]): this {
 		// always ephemeral
-		this.updateCurrentPageState({ hintingShapeIds: dedupe(ids) }, { ephemeral: true })
+		this.store.update(this.pageState.id, (s) => ({ ...s, hintingIds: dedupe(ids) }))
 		return this
 	}
 
-	// Erasing
+	// Erasing Ids
 
 	/**
 	 * The editor's current erasing ids.
 	 *
 	 * @public
 	 */
-	@computed get erasingShapeIds() {
-		return this.currentPageState.erasingShapeIds
+	@computed get erasingIds() {
+		return this.pageState.erasingIds
 	}
 
 	/**
-	 * The editor's current hinting shapes.
+	 * A derived set containing the current erasing ids.
 	 *
 	 * @public
 	 */
-	@computed get erasingShapes() {
-		const { erasingShapeIds } = this
-		return compact(erasingShapeIds.map((id) => this.getShape(id)))
+	@computed get erasingIdsSet() {
+		// todo: Make incremental derivation, so that this only gets updated when erasingIds changes: we're creating this too often!
+		return new Set<TLShapeId>(this.erasingIds)
 	}
 
 	/**
-	 * Set the editor's current erasing shapes.
+	 * Set the current erasing shapes.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.setErasingShapes([myShape])
-	 * editor.setErasingShapes([myShape.id])
+	 * editor.setErasingIds(['box1', 'box2'])
+	 * editor.setErasingIds() // Clears the erasing set
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to set as hinting.
+	 * @param ids - The ids of shapes to set as erasing.
 	 *
 	 * @public
 	 */
-	setErasingShapes(shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((shape) => shape.id)
-		ids.sort() // sort the incoming ids
-		const { erasingShapeIds } = this
-		if (ids.length === erasingShapeIds.length) {
-			// if the new ids are the same length as the current ids, they might be the same.
-			// presuming the current ids are also sorted, check each item to see if it's the same;
-			// if we find any unequal, then we know the new ids are different.
-			for (let i = 0; i < ids.length; i++) {
-				if (ids[i] !== erasingShapeIds[i]) {
-					this._setInstancePageState({ erasingShapeIds: ids }, { ephemeral: true })
-					break
-				}
-			}
-		} else {
-			// if the ids are a different length, then we know they're different.
-			this._setInstancePageState({ erasingShapeIds: ids }, { ephemeral: true })
-		}
+	setErasingIds(ids: TLShapeId[] = []): this {
+		const erasingIds = this.erasingIdsSet
+		if (ids.length === erasingIds.size && ids.every((id) => erasingIds.has(id))) return this
 
+		this.setPageState({ erasingIds: ids }, true)
 		return this
 	}
 
-	// Cropping
+	// Cropping Id
 
 	/**
 	 * The current cropping shape's id.
 	 *
 	 * @public
 	 */
-	get croppingShapeId() {
-		return this.currentPageState.croppingShapeId
+	get croppingId() {
+		return this.pageState.croppingId
 	}
 
 	/**
-	 * Set the current cropping shape.
+	 * Set the current cropping shape's id.
 	 *
-	 * @example
-	 * ```ts
-	 * editor.setCroppingShape(myShape)
-	 * editor.setCroppingShape(myShape.id)
-	 * ```
-	 *
-	 *
-	 * @param shape - The shape (or shape id) to set as cropping.
+	 * @param id - The id of the shape to crop or null to clear the cropping id.
 	 *
 	 * @public
 	 */
-	setCroppingShape(shape: TLShapeId | TLShape | null): this {
-		const id = typeof shape === 'string' ? shape : shape?.id ?? null
-		if (id !== this.croppingShapeId) {
+	setCroppingId(id: TLShapeId | null): this {
+		if (id !== this.croppingId) {
 			if (!id) {
-				this.updateCurrentPageState({ croppingShapeId: null })
+				this.setPageState({ croppingId: null })
+				if (this.isInAny('select.crop', 'select.pointing_crop_handle', 'select.cropping')) {
+					this.setSelectedTool('select.idle')
+				}
 			} else {
-				const shape = this.getShape(id)!
+				const shape = this.getShapeById(id)!
 				const util = this.getShapeUtil(shape)
 				if (shape && util.canCrop(shape)) {
-					this.updateCurrentPageState({ croppingShapeId: id })
+					this.setPageState({ croppingId: id, hoveredId: null })
 				}
 			}
 		}
 		return this
+	}
+
+	/** @internal */
+	private _cleanupInstancePageState(
+		prevPageState: TLInstancePageState,
+		shapesNoLongerInPage: Set<TLShapeId>
+	) {
+		let nextPageState = null as null | TLInstancePageState
+
+		const selectedIds = prevPageState.selectedIds.filter((id) => !shapesNoLongerInPage.has(id))
+		if (selectedIds.length !== prevPageState.selectedIds.length) {
+			if (!nextPageState) nextPageState = { ...prevPageState }
+			nextPageState.selectedIds = selectedIds
+		}
+
+		const erasingIds = prevPageState.erasingIds.filter((id) => !shapesNoLongerInPage.has(id))
+		if (erasingIds.length !== prevPageState.erasingIds.length) {
+			if (!nextPageState) nextPageState = { ...prevPageState }
+			nextPageState.erasingIds = erasingIds
+		}
+
+		if (prevPageState.hoveredId && shapesNoLongerInPage.has(prevPageState.hoveredId)) {
+			if (!nextPageState) nextPageState = { ...prevPageState }
+			nextPageState.hoveredId = null
+		}
+
+		if (prevPageState.editingId && shapesNoLongerInPage.has(prevPageState.editingId)) {
+			if (!nextPageState) nextPageState = { ...prevPageState }
+			nextPageState.editingId = null
+		}
+
+		const hintingIds = prevPageState.hintingIds.filter((id) => !shapesNoLongerInPage.has(id))
+		if (hintingIds.length !== prevPageState.hintingIds.length) {
+			if (!nextPageState) nextPageState = { ...prevPageState }
+			nextPageState.hintingIds = hintingIds
+		}
+
+		if (prevPageState.focusLayerId && shapesNoLongerInPage.has(prevPageState.focusLayerId)) {
+			if (!nextPageState) nextPageState = { ...prevPageState }
+			nextPageState.focusLayerId = null
+		}
+		return nextPageState
 	}
 
 	/* --------------------- Camera --------------------- */
@@ -2008,18 +2471,17 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/** @internal */
-	private _setCamera(point: VecLike): this {
-		const currentCamera = this.camera
+	private _willSetInitialBounds = true
 
-		if (currentCamera.x === point.x && currentCamera.y === point.y && currentCamera.z === point.z) {
-			return this
-		}
+	/** @internal */
+	private _setCamera(x: number, y: number, z = this.camera.z): this {
+		const currentCamera = this.camera
+		if (currentCamera.x === x && currentCamera.y === y && currentCamera.z === z) return this
+		const nextCamera = { ...currentCamera, x, y, z }
 
 		this.batch(() => {
-			this.store.put([{ ...currentCamera, ...point }]) // include id and meta here
+			this.store.put([nextCamera])
 
-			// Dispatch a new pointer move because the pointer's page will have changed
-			// (its screen position will compute to a new page position given the new camera position)
 			const { currentScreenPoint } = this.inputs
 
 			this.dispatch({
@@ -2032,7 +2494,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				altKey: this.inputs.altKey,
 				shiftKey: this.inputs.shiftKey,
 				button: 0,
-				isPen: this.instanceState.isPenMode ?? false,
+				isPen: this.isPenMode ?? false,
 			})
 
 			this._tickCameraState()
@@ -2046,83 +2508,116 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.setCamera({ x: 0, y: 0})
-	 * editor.setCamera({ x: 0, y: 0, z: 1.5})
-	 * editor.setCamera({ x: 0, y: 0, z: 1.5}, { duration: 1000, easing: (t) => t * t })
+	 * editor.setCamera(0, 0)
+	 * editor.setCamera(0, 0, 1)
 	 * ```
 	 *
-	 * @param point - The new camera position.
-	 * @param animation - (optional) Options for an animation.
+	 * @param x - The camera's x position.
+	 * @param y - The camera's y position.
+	 * @param z - The camera's z position. Defaults to the current zoom.
+	 * @param options - Options for the camera change.
 	 *
 	 * @public
 	 */
-	setCamera(point: VecLike, animation?: TLAnimationOptions): this {
-		const x = Number.isFinite(point.x) ? point.x : 0
-		const y = Number.isFinite(point.y) ? point.y : 0
-		const z = Number.isFinite(point.z) ? point.z! : this.zoomLevel
-
-		// Stop any camera animations
+	setCamera(
+		x: number,
+		y: number,
+		z = this.camera.z,
+		{ stopFollowing = true }: TLViewportOptions = {}
+	): this {
 		this.stopCameraAnimation()
-
-		// Stop following any user
-		if (this.instanceState.followingUserId) {
+		if (stopFollowing && this.instanceState.followingUserId) {
 			this.stopFollowingUser()
 		}
-
-		if (animation) {
-			const { width, height } = this.viewportScreenBounds
-			return this._animateToViewport(new Box2d(-x, -y, width / z, height / z), animation)
-		} else {
-			this._setCamera({ x, y, z })
-		}
-
+		x = Number.isNaN(x) ? 0 : x
+		y = Number.isNaN(y) ? 0 : y
+		z = Number.isNaN(z) ? 1 : z
+		this._setCamera(x, y, z)
 		return this
 	}
 
 	/**
-	 * Center the camera on a point (in the current page space).
+	 * Animate the camera.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.centerOnPoint({ x: 100, y: 100 })
-	 * editor.centerOnPoint({ x: 100, y: 100 }, { duration: 200 })
+	 * editor.animateCamera(0, 0)
+	 * editor.animateCamera(0, 0, 1)
+	 * editor.animateCamera(0, 0, 1, { duration: 1000, easing: (t) => t * t })
 	 * ```
 	 *
-	 * @param point - The point in the current page space to center on.
-	 * @param animation - (optional) The options for an animation.
+	 * @param x - The camera's x position.
+	 * @param y - The camera's y position.
+	 * @param z - The camera's z position. Defaults to the current zoom.
+	 * @param opts - Options for the animation.
 	 *
 	 * @public
 	 */
-	centerOnPoint(point: VecLike, animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	animateCamera(
+		x: number,
+		y: number,
+		z = this.camera.z,
+		opts: TLAnimationOptions = DEFAULT_ANIMATION_OPTIONS
+	): this {
+		x = Number.isNaN(x) ? 0 : x
+		y = Number.isNaN(y) ? 0 : y
+		z = Number.isNaN(z) ? 1 : z
+		const { width, height } = this.viewportScreenBounds
+		const w = width / z
+		const h = height / z
+
+		const targetViewport = new Box2d(-x, -y, w, h)
+
+		return this._animateToViewport(targetViewport, opts)
+	}
+
+	/**
+	 * Center the camera on a point (in page space).
+	 *
+	 * @example
+	 * ```ts
+	 * editor.centerOnPoint(100, 100)
+	 * ```
+	 *
+	 * @param x - The x position of the point.
+	 * @param y - The y position of the point.
+	 * @param opts - The options for an animation.
+	 *
+	 * @public
+	 */
+	centerOnPoint(x: number, y: number, opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
 
 		const {
 			viewportPageBounds: { width: pw, height: ph },
 			camera,
 		} = this
 
-		this.setCamera({ x: -(point.x - pw / 2), y: -(point.y - ph / 2), z: camera.z }, animation)
+		if (opts?.duration) {
+			this.animateCamera(-(x - pw / 2), -(y - ph / 2), camera.z, opts)
+		} else {
+			this.setCamera(-(x - pw / 2), -(y - ph / 2), camera.z)
+		}
 		return this
 	}
 
 	/**
 	 * Move the camera to the nearest content.
 	 *
-	 * @example
-	 * ```ts
-	 * editor.zoomToContent()
-	 * editor.zoomToContent({ duration: 200 })
-	 * ```
-	 *
-	 * @param opts - (optional) The options for an animation.
-	 *
 	 * @public
 	 */
-	zoomToContent(): this {
-		const bounds = this.selectionPageBounds ?? this.currentPageBounds
+	zoomToContent() {
+		const bounds = this.selectedPageBounds ?? this.allShapesCommonBounds
 
 		if (bounds) {
-			this.zoomToBounds(bounds, Math.min(1, this.zoomLevel), { duration: 220 })
+			this.zoomToBounds(
+				bounds.minX,
+				bounds.minY,
+				bounds.width,
+				bounds.height,
+				Math.min(1, this.zoomLevel),
+				{ duration: 220 }
+			)
 		}
 
 		return this
@@ -2134,21 +2629,25 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @example
 	 * ```ts
 	 * editor.zoomToFit()
-	 * editor.zoomToFit({ duration: 200 })
 	 * ```
-	 *
-	 * @param animation - (optional) The options for an animation.
 	 *
 	 * @public
 	 */
-	zoomToFit(animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	zoomToFit(opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
 
 		const ids = [...this.currentPageShapeIds]
 		if (ids.length <= 0) return this
 
-		const pageBounds = Box2d.Common(compact(ids.map((id) => this.getShapePageBounds(id))))
-		this.zoomToBounds(pageBounds, undefined, animation)
+		const pageBounds = Box2d.Common(compact(ids.map((id) => this.getPageBoundsById(id))))
+		this.zoomToBounds(
+			pageBounds.minX,
+			pageBounds.minY,
+			pageBounds.width,
+			pageBounds.height,
+			undefined,
+			opts
+		)
 		return this
 	}
 
@@ -2158,24 +2657,22 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @example
 	 * ```ts
 	 * editor.resetZoom()
-	 * editor.resetZoom(editor.viewportScreenCenter)
-	 * editor.resetZoom(editor.viewportScreenCenter, { duration: 200 })
 	 * ```
 	 *
-	 * @param point - (optional) The screen point to zoom out on. Defaults to the viewport screen center.
-	 * @param animation - (optional) The options for an animation.
+	 * @param opts - The options for an animation.
 	 *
 	 * @public
 	 */
-	resetZoom(point = this.viewportScreenCenter, animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	resetZoom(point = this.viewportScreenCenter, opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
 
 		const { x: cx, y: cy, z: cz } = this.camera
 		const { x, y } = point
-		this.setCamera(
-			{ x: cx + (x / 1 - x) - (x / cz - x), y: cy + (y / 1 - y) - (y / cz - y), z: 1 },
-			animation
-		)
+		if (opts?.duration) {
+			this.animateCamera(cx + (x / 1 - x) - (x / cz - x), cy + (y / 1 - y) - (y / cz - y), 1, opts)
+		} else {
+			this.setCamera(cx + (x / 1 - x) - (x / cz - x), cy + (y / 1 - y) - (y / cz - y), 1)
+		}
 
 		return this
 	}
@@ -2190,12 +2687,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * editor.zoomIn(editor.inputs.currentScreenPoint, { duration: 120 })
 	 * ```
 	 *
-	 * @param animation - (optional) The options for an animation.
+	 * @param opts - The options for an animation.
 	 *
 	 * @public
 	 */
-	zoomIn(point = this.viewportScreenCenter, animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	zoomIn(point = this.viewportScreenCenter, opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
 
 		const { x: cx, y: cy, z: cz } = this.camera
 
@@ -2210,10 +2707,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 
 		const { x, y } = point
-		this.setCamera(
-			{ x: cx + (x / zoom - x) - (x / cz - x), y: cy + (y / zoom - y) - (y / cz - y), z: zoom },
-			animation
-		)
+		if (opts?.duration) {
+			this.animateCamera(
+				cx + (x / zoom - x) - (x / cz - x),
+				cy + (y / zoom - y) - (y / cz - y),
+				zoom,
+				opts
+			)
+		} else {
+			this.setCamera(cx + (x / zoom - x) - (x / cz - x), cy + (y / zoom - y) - (y / cz - y), zoom)
+		}
 
 		return this
 	}
@@ -2228,12 +2731,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * editor.zoomOut(editor.inputs.currentScreenPoint, { duration: 120 })
 	 * ```
 	 *
-	 * @param animation - (optional) The options for an animation.
+	 * @param opts - The options for an animation.
 	 *
 	 * @public
 	 */
-	zoomOut(point = this.viewportScreenCenter, animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	zoomOut(point = this.viewportScreenCenter, opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
 
 		const { x: cx, y: cy, z: cz } = this.camera
 
@@ -2249,14 +2752,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const { x, y } = point
 
-		this.setCamera(
-			{
-				x: cx + (x / zoom - x) - (x / cz - x),
-				y: cy + (y / zoom - y) - (y / cz - y),
-				z: zoom,
-			},
-			animation
-		)
+		if (opts?.duration) {
+			this.animateCamera(
+				cx + (x / zoom - x) - (x / cz - x),
+				cy + (y / zoom - y) - (y / cz - y),
+				zoom,
+				opts
+			)
+		} else {
+			this.setCamera(cx + (x / zoom - x) - (x / cz - x), cy + (y / zoom - y) - (y / cz - y), zoom)
+		}
 
 		return this
 	}
@@ -2269,17 +2774,26 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * editor.zoomToSelection()
 	 * ```
 	 *
-	 * @param animation - (optional) The options for an animation.
+	 * @param opts - The options for an animation.
 	 *
 	 * @public
 	 */
-	zoomToSelection(animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	zoomToSelection(opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
 
-		const { selectionPageBounds } = this
-		if (!selectionPageBounds) return this
+		const ids = this.selectedIds
+		if (ids.length <= 0) return this
 
-		this.zoomToBounds(selectionPageBounds, Math.max(1, this.zoomLevel), animation)
+		const selectedBounds = Box2d.Common(compact(ids.map((id) => this.getPageBoundsById(id))))
+
+		this.zoomToBounds(
+			selectedBounds.minX,
+			selectedBounds.minY,
+			selectedBounds.width,
+			selectedBounds.height,
+			Math.max(1, this.camera.z),
+			opts
+		)
 
 		return this
 	}
@@ -2288,20 +2802,27 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * Pan or pan/zoom the selected ids into view. This method tries to not change the zoom if possible.
 	 *
 	 * @param ids - The ids of the shapes to pan and zoom into view.
-	 * @param animation - The options for an animation.
+	 * @param opts - The options for an animation.
 	 *
 	 * @public
 	 */
-	panZoomIntoView(ids: TLShapeId[], animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	panZoomIntoView(ids: TLShapeId[], opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
 
 		if (ids.length <= 0) return this
-		const selectionBounds = Box2d.Common(compact(ids.map((id) => this.getShapePageBounds(id))))
+		const selectedBounds = Box2d.Common(compact(ids.map((id) => this.getPageBoundsById(id))))
 
 		const { viewportPageBounds } = this
 
-		if (viewportPageBounds.h < selectionBounds.h || viewportPageBounds.w < selectionBounds.w) {
-			this.zoomToBounds(selectionBounds, this.camera.z, animation)
+		if (viewportPageBounds.h < selectedBounds.h || viewportPageBounds.w < selectedBounds.w) {
+			this.zoomToBounds(
+				selectedBounds.minX,
+				selectedBounds.minY,
+				selectedBounds.width,
+				selectedBounds.height,
+				this.camera.z,
+				opts
+			)
 
 			return this
 		} else {
@@ -2309,51 +2830,63 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 			let offsetX = 0
 			let offsetY = 0
-			if (insetViewport.maxY < selectionBounds.maxY) {
+			if (insetViewport.maxY < selectedBounds.maxY) {
 				// off bottom
-				offsetY = insetViewport.maxY - selectionBounds.maxY
-			} else if (insetViewport.minY > selectionBounds.minY) {
+				offsetY = insetViewport.maxY - selectedBounds.maxY
+			} else if (insetViewport.minY > selectedBounds.minY) {
 				// off top
-				offsetY = insetViewport.minY - selectionBounds.minY
+				offsetY = insetViewport.minY - selectedBounds.minY
 			} else {
 				// inside y-bounds
 			}
 
-			if (insetViewport.maxX < selectionBounds.maxX) {
+			if (insetViewport.maxX < selectedBounds.maxX) {
 				// off right
-				offsetX = insetViewport.maxX - selectionBounds.maxX
-			} else if (insetViewport.minX > selectionBounds.minX) {
+				offsetX = insetViewport.maxX - selectedBounds.maxX
+			} else if (insetViewport.minX > selectedBounds.minX) {
 				// off left
-				offsetX = insetViewport.minX - selectionBounds.minX
+				offsetX = insetViewport.minX - selectedBounds.minX
 			} else {
 				// inside x-bounds
 			}
 
 			const { camera } = this
-			this.setCamera({ x: camera.x + offsetX, y: camera.y + offsetY, z: camera.z }, animation)
+
+			if (opts?.duration) {
+				this.animateCamera(camera.x + offsetX, camera.y + offsetY, camera.z, opts)
+			} else {
+				this.setCamera(camera.x + offsetX, camera.y + offsetY, camera.z)
+			}
 		}
 
 		return this
 	}
 
 	/**
-	 * Zoom the camera to fit a bounding box (in the current page space).
+	 * Zoom the camera to fit a bounding box (in page space).
 	 *
 	 * @example
 	 * ```ts
-	 * editor.zoomToBounds(myBounds)
-	 * editor.zoomToBounds(myBounds, 1)
-	 * editor.zoomToBounds(myBounds, 1, { duration: 100 })
+	 * editor.zoomToBounds(0, 0, 100, 100)
 	 * ```
 	 *
-	 * @param bounds - The bounding box.
+	 * @param x - The bounding box's x position.
+	 * @param y - The bounding box's y position.
+	 * @param width - The bounding box's width.
+	 * @param height - The bounding box's height.
 	 * @param targetZoom - The desired zoom level. Defaults to 0.1.
-	 * @param animation - (optional) The options for an animation.
 	 *
 	 * @public
 	 */
-	zoomToBounds(bounds: Box2d, targetZoom?: number, animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
+	zoomToBounds(
+		x: number,
+		y: number,
+		width: number,
+		height: number,
+		targetZoom?: number,
+		opts?: TLAnimationOptions
+	): this {
+		if (!this.canMoveCamera) return this
 
 		const { viewportScreenBounds } = this
 
@@ -2361,8 +2894,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		let zoom = clamp(
 			Math.min(
-				(viewportScreenBounds.width - inset) / bounds.width,
-				(viewportScreenBounds.height - inset) / bounds.height
+				(viewportScreenBounds.width - inset) / width,
+				(viewportScreenBounds.height - inset) / height
 			),
 			MIN_ZOOM,
 			MAX_ZOOM
@@ -2372,14 +2905,20 @@ export class Editor extends EventEmitter<TLEventMap> {
 			zoom = Math.min(targetZoom, zoom)
 		}
 
-		this.setCamera(
-			{
-				x: -bounds.minX + (viewportScreenBounds.width - bounds.width * zoom) / 2 / zoom,
-				y: -bounds.minY + (viewportScreenBounds.height - bounds.height * zoom) / 2 / zoom,
-				z: zoom,
-			},
-			animation
-		)
+		if (opts?.duration) {
+			this.animateCamera(
+				-x + (viewportScreenBounds.width - width * zoom) / 2 / zoom,
+				-y + (viewportScreenBounds.height - height * zoom) / 2 / zoom,
+				zoom,
+				opts
+			)
+		} else {
+			this.setCamera(
+				-x + (viewportScreenBounds.width - width * zoom) / 2 / zoom,
+				-y + (viewportScreenBounds.height - height * zoom) / 2 / zoom,
+				zoom
+			)
+		}
 
 		return this
 	}
@@ -2389,17 +2928,27 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.pan({ x: 100, y: 100 })
-	 * editor.pan({ x: 100, y: 100 }, { duration: 1000 })
+	 * editor.pan(100, 100)
+	 * editor.pan(100, 100, { duration: 1000 })
 	 * ```
 	 *
-	 * @param offset - The offset in the current page space.
-	 * @param animation - (optional) The animation options.
+	 * @param dx - The amount to pan on the x axis.
+	 * @param dy - The amount to pan on the y axis.
+	 * @param opts - The animation options
 	 */
-	pan(offset: VecLike, animation?: TLAnimationOptions): this {
-		if (!this.instanceState.canMoveCamera) return this
-		const { x: cx, y: cy, z: cz } = this.camera
-		this.setCamera({ x: cx + offset.x / cz, y: cy + offset.y / cz, z: cz }, animation)
+	pan(dx: number, dy: number, opts?: TLAnimationOptions): this {
+		if (!this.canMoveCamera) return this
+
+		const { camera } = this
+		const { x: cx, y: cy, z: cz } = camera
+		const d = new Vec2d(dx, dy).div(cz)
+
+		if (opts?.duration ?? 0 > 0) {
+			return this.animateCamera(cx + d.x, cy + d.y, cz, opts)
+		} else {
+			this.setCamera(cx + d.x, cy + d.y, cz)
+		}
+
 		return this
 	}
 
@@ -2408,8 +2957,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	stopCameraAnimation(): this {
+	stopCameraAnimation() {
 		this.emit('stop-camera-animation')
+
 		return this
 	}
 
@@ -2439,7 +2989,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const { elapsed, easing, duration, start, end } = this._viewportAnimation
 
 		if (elapsed > duration) {
-			this._setCamera({ x: -end.x, y: -end.y, z: this.viewportScreenBounds.width / end.width })
+			const z = this.viewportScreenBounds.width / end.width
+			const x = -end.x
+			const y = -end.y
+
+			this._setCamera(x, y, z)
 			cancel()
 			return
 		}
@@ -2450,17 +3004,21 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const left = start.minX + (end.minX - start.minX) * t
 		const top = start.minY + (end.minY - start.minY) * t
 		const right = start.maxX + (end.maxX - start.maxX) * t
+		const bottom = start.maxY + (end.maxY - start.maxY) * t
 
-		this._setCamera({ x: -left, y: -top, z: this.viewportScreenBounds.width / (right - left) })
+		const easedViewport = new Box2d(left, top, right - left, bottom - top)
+
+		const z = this.viewportScreenBounds.width / easedViewport.width
+		const x = -easedViewport.x
+		const y = -easedViewport.y
+
+		this._setCamera(x, y, z)
 	}
 
 	/** @internal */
 	private _animateToViewport(targetViewportPage: Box2d, opts = {} as TLAnimationOptions) {
 		const { duration = 0, easing = EASINGS.easeInOutCubic } = opts
-		const {
-			user: { animationSpeed },
-			viewportPageBounds,
-		} = this
+		const { animationSpeed, viewportPageBounds } = this
 
 		// If we have an existing animation, then stop it; also stop following any user
 		this.stopCameraAnimation()
@@ -2470,11 +3028,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		if (duration === 0 || animationSpeed === 0) {
 			// If we have no animation, then skip the animation and just set the camera
-			return this._setCamera({
-				x: -targetViewportPage.x,
-				y: -targetViewportPage.y,
-				z: this.viewportScreenBounds.width / targetViewportPage.width,
-			})
+			return this._setCamera(
+				-targetViewportPage.x,
+				-targetViewportPage.y,
+				this.viewportScreenBounds.width / targetViewportPage.width
+			)
 		}
 
 		// Set our viewport animation
@@ -2483,7 +3041,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			duration: duration / animationSpeed,
 			easing,
 			start: viewportPageBounds.clone(),
-			end: targetViewportPage.clone(),
+			end: targetViewportPage,
 		}
 
 		// On each tick, animate the viewport
@@ -2501,18 +3059,18 @@ export class Editor extends EventEmitter<TLEventMap> {
 	slideCamera(
 		opts = {} as {
 			speed: number
-			direction: VecLike
+			direction: Vec2d
 			friction: number
 			speedThreshold?: number
 		}
-	): this {
-		if (!this.instanceState.canMoveCamera) return this
+	) {
+		if (!this.canMoveCamera) return this
 
 		this.stopCameraAnimation()
 
-		const { animationSpeed } = this.user
+		const { animationSpeed } = this
 
-		if (animationSpeed === 0) return this
+		if (animationSpeed === 0) return
 
 		const { speed, friction, direction, speedThreshold = 0.01 } = opts
 		let currentSpeed = Math.min(speed, 1)
@@ -2526,14 +3084,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const moveCamera = (elapsed: number) => {
 			const { x: cx, y: cy, z: cz } = this.camera
-			const movementVec = Vec2d.Mul(direction, (currentSpeed * elapsed) / cz)
+			const movementVec = direction.clone().mul((currentSpeed * elapsed) / cz)
 
 			// Apply friction
 			currentSpeed *= 1 - friction
 			if (currentSpeed < speedThreshold) {
 				cancel()
 			} else {
-				this._setCamera({ x: cx + movementVec.x, y: cy + movementVec.y, z: cz })
+				this._setCamera(cx + movementVec.x, cy + movementVec.y, cz)
 			}
 		}
 
@@ -2549,7 +3107,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @param userId - The id of the user to aniamte to.
 	 * @public
 	 */
-	animateToUser(userId: string): this {
+	animateToUser(userId: string) {
 		const presences = this.store.query.records('instance_presence', () => ({
 			userId: { eq: userId },
 		}))
@@ -2560,7 +3118,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			})
 			.pop()
 
-		if (!presence) return this
+		if (!presence) return
 
 		this.batch(() => {
 			// If we're following someone, stop following them
@@ -2571,13 +3129,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 			// If we're not on the same page, move to the page they're on
 			const isOnSamePage = presence.currentPageId === this.currentPageId
 			if (!isOnSamePage) {
-				this.setCurrentPage(presence.currentPageId)
+				this.setCurrentPageId(presence.currentPageId)
 			}
 
 			// Only animate the camera if the user is on the same page as us
 			const options = isOnSamePage ? { duration: 500 } : undefined
 
-			this.centerOnPoint(presence.cursor, options)
+			const position = presence.cursor
+
+			this.centerOnPoint(position.x, position.y, options)
 
 			// Highlight the user's cursor
 			const { highlightedUserIds } = this.instanceState
@@ -2592,8 +3152,6 @@ export class Editor extends EventEmitter<TLEventMap> {
 				this.updateInstanceState({ highlightedUserIds })
 			}, COLLABORATOR_IDLE_TIMEOUT)
 		})
-
-		return this
 	}
 
 	/**
@@ -2602,12 +3160,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	animateToShape(shapeId: TLShapeId, opts: TLAnimationOptions = DEFAULT_ANIMATION_OPTIONS): this {
-		if (!this.instanceState.canMoveCamera) return this
+		if (!this.canMoveCamera) return this
 
 		const activeArea = this.viewportScreenBounds.clone().expandBy(-32)
 		const viewportAspectRatio = activeArea.width / activeArea.height
 
-		const shapePageBounds = this.getShapePageBounds(shapeId)
+		const shapePageBounds = this.getPageBoundsById(shapeId)
 
 		if (!shapePageBounds) return this
 
@@ -2634,9 +3192,6 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 	// Viewport
 
-	/** @internal */
-	private _willSetInitialBounds = true
-
 	/**
 	 * Update the viewport. The viewport will measure the size and screen position of its container
 	 * element. This should be done whenever the container's position on the screen changes.
@@ -2651,19 +3206,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	updateViewportScreenBounds(center = false): this {
+	updateViewportScreenBounds(center = false) {
 		const container = this.getContainer()
 
 		if (!container) return this
 		const rect = container.getBoundingClientRect()
-		const screenBounds = new Box2d(
-			rect.left || rect.x,
-			rect.top || rect.y,
-			Math.max(rect.width, 1),
-			Math.max(rect.height, 1)
-		)
+		const screenBounds = new Box2d(0, 0, Math.max(rect.width, 1), Math.max(rect.height, 1))
+
 		const boundsAreEqual = screenBounds.equals(this.viewportScreenBounds)
 
+		// Get the current value
 		const { _willSetInitialBounds } = this
 
 		if (boundsAreEqual) {
@@ -2672,31 +3224,35 @@ export class Editor extends EventEmitter<TLEventMap> {
 			if (_willSetInitialBounds) {
 				// If we have just received the initial bounds, don't center the camera.
 				this._willSetInitialBounds = false
-				this.updateInstanceState(
-					{ screenBounds: screenBounds.toJson() },
-					{ squashing: true, ephemeral: true }
-				)
+				this.updateInstanceState({ screenBounds: screenBounds.toJson() }, true, true)
 			} else {
-				if (center && !this.instanceState.followingUserId) {
-					// Get the page center before the change, make the change, and restore it
+				const { zoomLevel } = this
+				if (center) {
 					const before = this.viewportPageCenter
-					this.updateInstanceState(
-						{ screenBounds: screenBounds.toJson() },
-						{ squashing: true, ephemeral: true }
-					)
-					this.centerOnPoint(before)
+					this.updateInstanceState({ screenBounds: screenBounds.toJson() }, true, true)
+					const after = this.viewportPageCenter
+					if (!this.instanceState.followingUserId) {
+						this.pan((after.x - before.x) * zoomLevel, (after.y - before.y) * zoomLevel)
+					}
 				} else {
-					// Otherwise,
-					this.updateInstanceState(
-						{ screenBounds: screenBounds.toJson() },
-						{ squashing: true, ephemeral: true }
-					)
+					const before = this.screenToPage(0, 0)
+					this.updateInstanceState({ screenBounds: screenBounds.toJson() }, true, true)
+					const after = this.screenToPage(0, 0)
+					if (!this.instanceState.followingUserId) {
+						this.pan((after.x - before.x) * zoomLevel, (after.y - before.y) * zoomLevel)
+					}
 				}
 			}
 		}
 
 		this._tickCameraState()
 		this.updateRenderingBounds()
+
+		const { editingId } = this
+
+		if (editingId) {
+			this.panZoomIntoView([editingId])
+		}
 
 		return this
 	}
@@ -2721,18 +3277,19 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * The current viewport in the current page space.
+	 * The current viewport in page space.
 	 *
 	 * @public
 	 */
 	@computed get viewportPageBounds() {
-		const { w, h } = this.viewportScreenBounds
-		const { x: cx, y: cy, z: cz } = this.camera
-		return new Box2d(-cx, -cy, w / cz, h / cz)
+		const { x, y, w, h } = this.viewportScreenBounds
+		const tl = this.screenToPage(x, y)
+		const br = this.screenToPage(x + w, y + h)
+		return new Box2d(tl.x, tl.y, br.x - tl.x, br.y - tl.y)
 	}
 
 	/**
-	 * The center of the viewport in the current page space.
+	 * The center of the viewport in page space.
 	 *
 	 * @public
 	 */
@@ -2741,47 +3298,49 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * Convert a point in screen space to a point in the current page space.
+	 * Convert a point in screen space to a point in page space.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.screenToPage({ x: 100, y: 100 })
+	 * editor.screenToPage(100, 100)
 	 * ```
 	 *
-	 * @param point - The point in screen space.
+	 * @param x - The x coordinate of the point in screen space.
+	 * @param y - The y coordinate of the point in screen space.
+	 * @param camera - The camera to use. Defaults to the current camera.
 	 *
 	 * @public
 	 */
-	screenToPage(point: VecLike) {
+	screenToPage(x: number, y: number, z = 0.5, camera: Vec2dModel = this.camera) {
 		const { screenBounds } = this.store.unsafeGetWithoutCapture(TLINSTANCE_ID)!
-		const { x: cx, y: cy, z: cz = 1 } = this.camera
+		const { x: cx, y: cy, z: cz = 1 } = camera
 		return {
-			x: (point.x - screenBounds.x) / cz - cx,
-			y: (point.y - screenBounds.y) / cz - cy,
-			z: point.z ?? 0.5,
+			x: (x - screenBounds.x) / cz - cx,
+			y: (y - screenBounds.y) / cz - cy,
+			z,
 		}
 	}
 
 	/**
-	 * Convert a point in the current page space to a point in current screen space.
+	 * Convert a point in page space to a point in screen space.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.pageToScreen({ x: 100, y: 100 })
+	 * editor.pageToScreen(100, 100)
 	 * ```
 	 *
-	 * @param point - The point in screen space.
+	 * @param x - The x coordinate of the point in screen space.
+	 * @param y - The y coordinate of the point in screen space.
+	 * @param camera - The camera to use. Defaults to the current camera.
 	 *
 	 * @public
 	 */
-	pageToScreen(point: VecLike) {
-		const { screenBounds } = this.store.unsafeGetWithoutCapture(TLINSTANCE_ID)!
-		const { x: cx, y: cy, z: cz = 1 } = this.camera
-
+	pageToScreen(x: number, y: number, z = 0.5, camera: Vec2dModel = this.camera) {
+		const { x: cx, y: cy, z: cz = 1 } = camera
 		return {
-			x: (point.x + cx) * cz + screenBounds.x,
-			y: (point.y + cy) * cz + screenBounds.y,
-			z: point.z ?? 0.5,
+			x: x + cx * cz,
+			y: y + cy * cz,
+			z,
 		}
 	}
 
@@ -2794,7 +3353,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	startFollowingUser(userId: string): this {
+	startFollowingUser(userId: string) {
 		const leaderPresences = this.store.query.records('instance_presence', () => ({
 			userId: { eq: userId },
 		}))
@@ -2807,13 +3366,13 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		// If the leader is following us, then we can't follow them
 		if (leaderPresences.value.some((p) => p.followingUserId === thisUserId)) {
-			return this
+			return
 		}
 
 		transact(() => {
 			this.stopFollowingUser()
 
-			this.updateInstanceState({ followingUserId: userId }, { ephemeral: true })
+			this.updateInstanceState({ followingUserId: userId }, true)
 		})
 
 		const cancel = () => {
@@ -2839,10 +3398,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			const isOnSamePage = leaderPresence.currentPageId === this.currentPageId
 			const chaseProportion = isOnSamePage ? FOLLOW_CHASE_PROPORTION : 1
 			if (!isOnSamePage) {
-				this.stopFollowingUser()
-				this.setCurrentPage(leaderPresence.currentPageId)
-				this.startFollowingUser(userId)
-				return
+				this.setCurrentPageId(leaderPresence.currentPageId, { stopFollowing: false })
 			}
 
 			// Get the bounds of the follower (me) and the leader (them)
@@ -2899,11 +3455,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 			// Update the camera!
 			isCaughtUp = false
 			this.stopCameraAnimation()
-			this._setCamera({
-				x: -(targetCenter.x - targetWidth / 2),
-				y: -(targetCenter.y - targetHeight / 2),
-				z: targetZoom,
-			})
+			this.setCamera(
+				-(targetCenter.x - targetWidth / 2),
+				-(targetCenter.y - targetHeight / 2),
+				targetZoom,
+				{ stopFollowing: false }
+			)
 		}
 
 		this.once('stop-following', cancel)
@@ -2917,8 +3474,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	stopFollowingUser(): this {
-		this.updateInstanceState({ followingUserId: null }, { ephemeral: true })
+	stopFollowingUser() {
+		this.updateInstanceState({ followingUserId: null }, true)
 		this.emit('stop-following')
 		return this
 	}
@@ -2974,11 +3531,19 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 	}
 
-	private getUnorderedRenderingShapes(
-		// The rendering state. We use this method both for rendering, which
-		// is based on other state, and for computing order for SVG export,
-		// which should work even when things are for example off-screen.
-		useEditorState: boolean
+	private computeUnorderedRenderingShapes(
+		ids: TLParentId[],
+		{
+			renderingBounds,
+			renderingBoundsExpanded,
+			erasingIdsSet,
+			editingId,
+		}: {
+			renderingBounds?: Box2d
+			renderingBoundsExpanded?: Box2d
+			erasingIdsSet?: Set<TLShapeId>
+			editingId?: TLShapeId | null
+		} = {}
 	) {
 		// Here we get the shape as well as any of its children, as well as their
 		// opacities. If the shape is being erased, and none of its ancestors are
@@ -2992,83 +3557,69 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const renderingShapes: {
 			id: TLShapeId
-			shape: TLShape
-			util: ShapeUtil
 			index: number
 			backgroundIndex: number
 			opacity: number
 			isCulled: boolean
+			isInViewport: boolean
 			maskedPageBounds: Box2d | undefined
 		}[] = []
 
-		let nextIndex = MAX_SHAPES_PER_PAGE * 2
-		let nextBackgroundIndex = MAX_SHAPES_PER_PAGE
+		let nextIndex = MAX_SHAPES_PER_PAGE
+		let nextBackgroundIndex = 0
 
-		// We only really need these if we're using editor state, but that's ok
-		const editingShapeId = this.editingShapeId
-		const selectedShapeIds = this.selectedShapeIds
-		const erasingShapeIds = this.erasingShapeIds
-		const renderingBoundsExpanded = this.renderingBoundsExpanded
+		const addShapeById = (id: TLParentId, parentOpacity: number, isAncestorErasing: boolean) => {
+			if (PageRecordType.isId(id)) {
+				for (const childId of this.getSortedChildIds(id)) {
+					addShapeById(childId, parentOpacity, isAncestorErasing)
+				}
+				return
+			}
 
-		// If renderingBoundsMargin is set to Infinity, then we won't cull offscreen shapes
-		const isCullingOffScreenShapes = Number.isFinite(this.renderingBoundsMargin)
-
-		let shape: TLShape | undefined
-		let opacity: number
-		let isShapeErasing: boolean
-		let isCulled: boolean
-		let util: ShapeUtil
-		let maskedPageBounds: Box2d | undefined
-
-		const addShapeById = (id: TLShapeId, parentOpacity: number, isAncestorErasing: boolean) => {
-			shape = this.getShape(id)
+			const shape = this.getShapeById(id)
 			if (!shape) return
 
-			opacity = shape.opacity * parentOpacity
-			isShapeErasing = false
-			isCulled = false
-			util = this.getShapeUtil(shape)
-			maskedPageBounds = this.getShapeMaskedPageBounds(id)
+			let opacity = shape.opacity * parentOpacity
+			let isShapeErasing = false
 
-			if (useEditorState) {
-				if (!isAncestorErasing && erasingShapeIds.includes(id)) {
-					isShapeErasing = true
-					opacity *= 0.32
-				}
-
-				isCulled =
-					isCullingOffScreenShapes &&
-					// only cull shapes that allow unmounting, i.e. not stateful components
-					util.canUnmount(shape) &&
-					// never cull editingg shapes
-					editingShapeId !== id &&
-					// if the shape is fully outside of its parent's clipping bounds...
-					(maskedPageBounds === undefined ||
-						// ...or if the shape is outside of the expanded viewport bounds...
-						(!renderingBoundsExpanded.includes(maskedPageBounds) &&
-							// ...and if it's not selected... then cull it
-							!selectedShapeIds.includes(id)))
+			if (!isAncestorErasing && erasingIdsSet?.has(id)) {
+				isShapeErasing = true
+				opacity *= 0.32
 			}
+
+			// If a child is outside of its parent's clipping bounds, then bounds will be undefined.
+			const maskedPageBounds = this.getMaskedPageBoundsById(id)
+
+			// Whether the shape is on screen. Use the "strict" viewport here.
+			const isInViewport = maskedPageBounds
+				? renderingBounds?.includes(maskedPageBounds) ?? true
+				: false
+
+			// Whether the shape should actually be culled / unmounted.
+			// - Use the "expanded" rendering viewport to include shapes that are just off-screen.
+			// - Editing shapes should never be culled.
+			const isCulled = maskedPageBounds
+				? (editingId !== id && !renderingBoundsExpanded?.includes(maskedPageBounds)) ?? true
+				: true
 
 			renderingShapes.push({
 				id,
-				shape,
-				util,
 				index: nextIndex,
 				backgroundIndex: nextBackgroundIndex,
 				opacity,
 				isCulled,
+				isInViewport,
 				maskedPageBounds,
 			})
 
 			nextIndex += 1
 			nextBackgroundIndex += 1
 
-			const childIds = this.getSortedChildIdsForParent(id)
+			const childIds = this.getSortedChildIds(id)
 			if (!childIds.length) return
 
 			let backgroundIndexToRestore = null
-			if (util.providesBackgroundForChildren(shape)) {
+			if (this.getShapeUtil(shape).providesBackgroundForChildren(shape)) {
 				backgroundIndexToRestore = nextBackgroundIndex
 				nextBackgroundIndex = nextIndex
 				nextIndex += MAX_SHAPES_PER_PAGE
@@ -3083,8 +3634,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 			}
 		}
 
-		for (const childId of this.getSortedChildIdsForParent(this.currentPageId)) {
-			addShapeById(childId, 1, false)
+		for (const id of ids) {
+			addShapeById(id, 1, false)
 		}
 
 		return renderingShapes
@@ -3096,7 +3647,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	@computed get renderingShapes() {
-		const renderingShapes = this.getUnorderedRenderingShapes(true)
+		const renderingShapes = this.computeUnorderedRenderingShapes([this.currentPageId], {
+			renderingBounds: this.renderingBounds,
+			renderingBoundsExpanded: this.renderingBoundsExpanded,
+			erasingIdsSet: this.erasingIdsSet,
+			editingId: this.editingId,
+		})
 
 		// Its IMPORTANT that the result be sorted by id AND include the index
 		// that the shape should be displayed at. Steve, this is the past you
@@ -3112,7 +3668,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * The current rendering bounds in the current page space, used for checking which shapes are "on screen".
+	 * The current rendering bounds in page space, used for checking which shapes are "on screen".
 	 *
 	 * @public
 	 */
@@ -3121,10 +3677,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/** @internal */
-	private readonly _renderingBounds = atom('rendering viewport', new Box2d())
+	readonly _renderingBounds = atom('rendering viewport', new Box2d())
 
 	/**
-	 * The current rendering bounds in the current page space, expanded slightly. Used for determining which shapes
+	 * The current rendering bounds in page space, expanded slightly. Used for determining which shapes
 	 * to render and which to "cull".
 	 *
 	 * @public
@@ -3134,7 +3690,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/** @internal */
-	private readonly _renderingBoundsExpanded = atom('rendering viewport expanded', new Box2d())
+	readonly _renderingBoundsExpanded = atom('rendering viewport expanded', new Box2d())
 
 	/**
 	 * Update the rendering bounds. This should be called when the viewport has stopped changing, such
@@ -3152,24 +3708,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const { viewportPageBounds } = this
 		if (viewportPageBounds.equals(this._renderingBounds.__unsafe__getWithoutCapture())) return this
 		this._renderingBounds.set(viewportPageBounds.clone())
-
-		if (Number.isFinite(this.renderingBoundsMargin)) {
-			this._renderingBoundsExpanded.set(
-				viewportPageBounds.clone().expandBy(this.renderingBoundsMargin / this.zoomLevel)
-			)
-		} else {
-			this._renderingBoundsExpanded.set(viewportPageBounds)
-		}
+		this._renderingBoundsExpanded.set(viewportPageBounds.clone().expandBy(100 / this.zoomLevel))
 		return this
 	}
-
-	/**
-	 * The distance to expand the viewport when measuring culling. A larger distance will
-	 * mean that shapes near to the viewport (but still outside of it) will not be culled.
-	 *
-	 * @public
-	 */
-	renderingBoundsMargin = 100
 
 	/* --------------------- Pages ---------------------- */
 
@@ -3193,7 +3734,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	get currentPage(): TLPage {
-		const page = this.getPage(this.currentPageId)!
+		const page = this.getPageById(this.currentPageId)
+		if (!page)
+			throw Error(`No current page (id ${this.currentPageId}, ${this.pages.length} pages))`)
 		return page
 	}
 
@@ -3207,23 +3750,38 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * Get a page.
+	 * Get a page by its ID.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getPage(myPage.id)
-	 * editor.getPage(myPage)
+	 * editor.getPageById(myPage.id)
 	 * ```
-	 *
-	 * @param page - The page (or page id) to get.
 	 *
 	 * @public
 	 */
-	getPage(page: TLPageId | TLPage): TLPage | undefined {
-		return this.store.get(typeof page === 'string' ? page : page.id)
+	getPageById(id: TLPageId): TLPage | undefined {
+		return this.store.get(id)
 	}
 
-	/* @internal */
+	/**
+	 * Get a page by its ID.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPageById(myPage.id)
+	 * ```
+	 *
+	 * @public
+	 */
+	getPageInfoById(id: TLPage['id']) {
+		return this.store.get(id)
+	}
+
+	/**
+	 * A cache of shape ids in the current page.
+	 *
+	 * @internal
+	 */
 	private readonly _currentPageShapeIds: ReturnType<typeof deriveShapeIdsInCurrentPage>
 
 	/**
@@ -3240,16 +3798,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * const idsOnPage1 = editor.getCurrentPageShapeIds('page1')
-	 * const idsOnPage2 = editor.getCurrentPageShapeIds(myPage2)
+	 * const idsOnPage1 = editor.getShapeIdsInPage('page1')
+	 * const idsOnPage2 = editor.getShapeIdsInPage('page2')
 	 * ```
 	 *
-	 * @param page - The page (or page id) to get.
+	 * @param pageId - The id of the page.
 	 *
 	 * @public
 	 **/
-	getPageShapeIds(page: TLPageId | TLPage): Set<TLShapeId> {
-		const pageId = typeof page === 'string' ? page : page.id
+	getShapeIdsInPage(pageId: TLPageId): Set<TLShapeId> {
 		const result = this.store.query.exec('shape', { parentId: { eq: pageId } })
 		return this.getShapeAndDescendantIds(result.map((s) => s.id))
 	}
@@ -3259,36 +3816,36 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.setCurrentPage('page1')
-	 * editor.setCurrentPage(myPage1)
+	 * editor.setCurrentPageId('page1')
 	 * ```
 	 *
-	 * @param page - The page (or page id) to set as the current page.
-	 * @param historyOptions - (optional) The history options for the change.
+	 * @param pageId - The id of the page to set as the current page.
+	 * @param options - Options for setting the current page.
 	 *
 	 * @public
 	 */
-	setCurrentPage(page: TLPageId | TLPage, historyOptions?: TLCommandHistoryOptions): this {
-		const pageId = typeof page === 'string' ? page : page.id
-		this._setCurrentPageId(pageId, historyOptions)
+	setCurrentPageId(pageId: TLPageId, { stopFollowing = true }: TLViewportOptions = {}): this {
+		this._setCurrentPageId(pageId, { stopFollowing })
 		return this
 	}
+
 	/** @internal */
 	private _setCurrentPageId = this.history.createCommand(
 		'setCurrentPage',
-		(pageId: TLPageId, historyOptions?: TLCommandHistoryOptions) => {
+		(pageId: TLPageId, { stopFollowing = true }: TLViewportOptions = {}) => {
 			if (!this.store.has(pageId)) {
 				console.error("Tried to set the current page id to a page that doesn't exist.")
 				return
 			}
 
-			this.stopFollowingUser()
+			if (stopFollowing && this.instanceState.followingUserId) {
+				this.stopFollowingUser()
+			}
 
 			return {
 				data: { toId: pageId, fromId: this.currentPageId },
 				squashing: true,
 				preservesRedoStack: true,
-				...historyOptions,
 			}
 		},
 		{
@@ -3297,7 +3854,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 					// in multiplayer contexts this page might have been deleted
 					return
 				}
-				if (!this.pageStates.find((p) => p.pageId === toId)) {
+				if (!this.getPageStateByPageId(toId)) {
 					const camera = CameraRecordType.create({
 						id: CameraRecordType.createId(toId),
 					})
@@ -3335,29 +3892,28 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @example
 	 * ```ts
 	 * editor.updatePage({ id: 'page2', name: 'Page 2' })
-	 * editor.updatePage({ id: 'page2', name: 'Page 2' }, { squashing: true })
 	 * ```
 	 *
 	 * @param partial - The partial of the shape to update.
-	 * @param historyOptions - (optional) The history options for the change.
 	 *
 	 * @public
 	 */
-	updatePage(partial: RequiredKeys<TLPage, 'id'>, historyOptions?: TLCommandHistoryOptions): this {
-		this._updatePage(partial, historyOptions)
+	updatePage(partial: RequiredKeys<TLPage, 'id'>, squashing = false) {
+		this._updatePage(partial, squashing)
 		return this
 	}
+
 	/** @internal */
 	private _updatePage = this.history.createCommand(
 		'updatePage',
-		(partial: RequiredKeys<TLPage, 'id'>, historyOptions?: TLCommandHistoryOptions) => {
-			if (this.instanceState.isReadonly) return null
+		(partial: RequiredKeys<TLPage, 'id'>, squashing = false) => {
+			if (this.isReadOnly) return null
 
-			const prev = this.getPage(partial.id)
+			const prev = this.getPageById(partial.id)
 
 			if (!prev) return null
 
-			return { data: { prev, partial }, ...historyOptions }
+			return { data: { prev, partial }, squashing }
 		},
 		{
 			do: ({ partial }) => {
@@ -3380,42 +3936,43 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.createPage(myPage)
-	 * editor.createPage({ name: 'Page 2' })
+	 * editor.createPage('New Page')
+	 * editor.createPage('New Page', 'page1')
 	 * ```
 	 *
-	 * @param page - The page (or page partial) to create.
+	 * @param id - The new page's id.
+	 * @param title - The new page's title.
 	 *
 	 * @public
 	 */
-	createPage(page: Partial<TLPage>): this {
-		this._createPage(page)
+	createPage(title: string, id: TLPageId = PageRecordType.createId(), belowPageIndex?: string) {
+		this._createPage(title, id, belowPageIndex)
 		return this
 	}
+
 	/** @internal */
 	private _createPage = this.history.createCommand(
 		'createPage',
-		(page: Partial<TLPage>) => {
-			if (this.instanceState.isReadonly) return null
+		(title: string, id: TLPageId = PageRecordType.createId(), belowPageIndex?: string) => {
+			if (this.isReadOnly) return null
 			if (this.pages.length >= MAX_PAGES) return null
-			const { pages } = this
+			const pageInfo = this.pages
+			const topIndex = belowPageIndex ?? pageInfo[pageInfo.length - 1]?.index ?? 'a1'
+			const bottomIndex = pageInfo[pageInfo.findIndex((p) => p.index === topIndex) + 1]?.index
 
-			const name = getIncrementedName(
-				page.name ?? 'Page',
-				pages.map((p) => p.name)
+			title = getIncrementedName(
+				title,
+				pageInfo.map((p) => p.name)
 			)
 
-			let index = page.index
-
-			if (!index || pages.some((p) => p.index === index)) {
-				index = getIndexAbove(pages[pages.length - 1].index)
-			}
-
 			const newPage = PageRecordType.create({
+				id,
+				name: title,
+				index:
+					bottomIndex && topIndex !== bottomIndex
+						? getIndexBetween(topIndex, bottomIndex)
+						: getIndexAbove(topIndex),
 				meta: {},
-				...page,
-				name,
-				index,
 			})
 
 			const newCamera = CameraRecordType.create({
@@ -3429,6 +3986,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 			return {
 				data: {
+					prevSelectedPageId: this.currentPageId,
 					newPage,
 					newTabPageState,
 					newCamera,
@@ -3437,71 +3995,22 @@ export class Editor extends EventEmitter<TLEventMap> {
 		},
 		{
 			do: ({ newPage, newTabPageState, newCamera }) => {
-				this.store.put([newPage, newCamera, newTabPageState])
-			},
-			undo: ({ newPage, newTabPageState, newCamera }) => {
-				if (this.pages.length === 1) return
-				this.store.remove([newTabPageState.id, newPage.id, newCamera.id])
-			},
-		}
-	)
-
-	/**
-	 * Delete a page.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.deletePage('page1')
-	 * ```
-	 *
-	 * @param id - The id of the page to delete.
-	 *
-	 * @public
-	 */
-	deletePage(page: TLPageId | TLPage): this {
-		const id = typeof page === 'string' ? page : page.id
-		this._deletePage(id)
-		return this
-	}
-	/** @internal */
-	private _deletePage = this.history.createCommand(
-		'delete_page',
-		(id: TLPageId) => {
-			if (this.instanceState.isReadonly) return null
-			const { pages } = this
-			if (pages.length === 1) return null
-
-			const deletedPage = this.getPage(id)
-			const deletedPageStates = this.pageStates.filter((s) => s.pageId === id)
-
-			if (!deletedPage) return null
-
-			if (id === this.currentPageId) {
-				const index = pages.findIndex((page) => page.id === id)
-				const next = pages[index - 1] ?? pages[index + 1]
-				this.setCurrentPage(next.id)
-			}
-
-			return { data: { id, deletedPage, deletedPageStates } }
-		},
-		{
-			do: ({ deletedPage, deletedPageStates }) => {
-				const { pages } = this
-				if (pages.length === 1) return
-
-				if (deletedPage.id === this.currentPageId) {
-					const index = pages.findIndex((page) => page.id === deletedPage.id)
-					const next = pages[index - 1] ?? pages[index + 1]
-					this.setCurrentPage(next.id)
-				}
-
-				this.store.remove(deletedPageStates.map((s) => s.id)) // remove the page state
-				this.store.remove([deletedPage.id]) // remove the page
+				this.store.put([
+					newPage,
+					newCamera,
+					newTabPageState,
+					{ ...this.instanceState, currentPageId: newPage.id },
+				])
 				this.updateRenderingBounds()
 			},
-			undo: ({ deletedPage, deletedPageStates }) => {
-				this.store.put([deletedPage])
-				this.store.put(deletedPageStates)
+			undo: ({ newPage, prevSelectedPageId, newTabPageState, newCamera }) => {
+				if (this.pages.length === 1) return
+				this.store.remove([newTabPageState.id, newPage.id, newCamera.id])
+
+				if (this.store.has(prevSelectedPageId) && this.currentPageId !== prevSelectedPageId) {
+					this.store.put([{ ...this.instanceState, currentPageId: prevSelectedPageId }])
+				}
+
 				this.updateRenderingBounds()
 			},
 		}
@@ -3515,29 +4024,22 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	duplicatePage(page: TLPageId | TLPage, createId: TLPageId = PageRecordType.createId()): this {
+	duplicatePage(id: TLPageId = this.currentPageId, createId: TLPageId = PageRecordType.createId()) {
 		if (this.pages.length >= MAX_PAGES) return this
-		const id = typeof page === 'string' ? page : page.id
-		const freshPage = this.getPage(id) // get the most recent version of the page anyway
-		if (!freshPage) return this
+		const page = this.getPageById(id)
+		if (!page) return this
 
-		const prevCamera = { ...this.camera }
-		const content = this.getContentFromCurrentPage(this.getSortedChildIdsForParent(freshPage.id))
+		const camera = { ...this.camera }
+		const content = this.getContent(this.getSortedChildIds(page.id))
 
 		this.batch(() => {
-			const { pages } = this
-			const index = getIndexBetween(freshPage.index, pages[pages.indexOf(freshPage) + 1]?.index)
+			this.createPage(page.name + ' Copy', createId, page.index)
+			this.setCurrentPageId(createId)
+			this.setCamera(camera.x, camera.y, camera.z)
 
-			// create the page (also creates the pagestate and camera for the new page)
-			this.createPage({ name: freshPage.name + ' Copy', id: createId, index })
-			// set the new page as the current page
-			this.setCurrentPage(createId)
-			// update the new page's camera to the previous page's camera
-			this.setCamera(prevCamera)
-
+			// will change page automatically
 			if (content) {
-				// If we had content on the previous page, put it on the new page
-				return this.putContentOntoCurrentPage(content)
+				return this.putContent(content)
 			}
 		})
 
@@ -3557,12 +4059,71 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	renamePage(page: TLPageId | TLPage, name: string, historyOptions?: TLCommandHistoryOptions) {
-		const id = typeof page === 'string' ? page : page.id
-		if (this.instanceState.isReadonly) return this
-		this.updatePage({ id, name }, historyOptions)
+	renamePage(id: TLPageId, name: string, squashing = false) {
+		if (this.isReadOnly) return this
+		this.updatePage({ id, name }, squashing)
 		return this
 	}
+
+	/**
+	 * Delete a page.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.deletePage('page1')
+	 * ```
+	 *
+	 * @param id - The id of the page to delete.
+	 *
+	 * @public
+	 */
+	deletePage(id: TLPageId) {
+		this._deletePage(id)
+	}
+
+	/** @internal */
+	private _deletePage = this.history.createCommand(
+		'delete_page',
+		(id: TLPageId) => {
+			if (this.isReadOnly) return null
+			const { pages } = this
+			if (pages.length === 1) return null
+
+			const deletedPage = this.getPageById(id)
+			const deletedPageStates = this._pageStates.value.filter((s) => s.pageId === id)
+
+			if (!deletedPage) return null
+
+			if (id === this.currentPageId) {
+				const index = pages.findIndex((page) => page.id === id)
+				const next = pages[index - 1] ?? pages[index + 1]
+				this.setCurrentPageId(next.id)
+			}
+
+			return { data: { id, deletedPage, deletedPageStates } }
+		},
+		{
+			do: ({ deletedPage, deletedPageStates }) => {
+				const { pages } = this
+				if (pages.length === 1) return
+
+				if (deletedPage.id === this.currentPageId) {
+					const index = pages.findIndex((page) => page.id === deletedPage.id)
+					const next = pages[index - 1] ?? pages[index + 1]
+					this.setCurrentPageId(next.id)
+				}
+
+				this.store.remove(deletedPageStates.map((s) => s.id)) // remove the page state
+				this.store.remove([deletedPage.id]) // remove the page
+				this.updateRenderingBounds()
+			},
+			undo: ({ deletedPage, deletedPageStates }) => {
+				this.store.put([deletedPage])
+				this.store.put(deletedPageStates)
+				this.updateRenderingBounds()
+			},
+		}
+	)
 
 	/* --------------------- Assets --------------------- */
 
@@ -3592,15 +4153,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	createAssets(assets: TLAsset[]): this {
+	createAssets(assets: TLAsset[]) {
 		this._createAssets(assets)
 		return this
 	}
+
 	/** @internal */
 	private _createAssets = this.history.createCommand(
 		'createAssets',
 		(assets: TLAsset[]) => {
-			if (this.instanceState.isReadonly) return null
+			if (this.isReadOnly) return null
 			if (assets.length <= 0) return null
 
 			return { data: { assets } }
@@ -3617,6 +4179,44 @@ export class Editor extends EventEmitter<TLEventMap> {
 	)
 
 	/**
+	 * Delete one or more assets.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.deleteAssets(['asset1', 'asset2'])
+	 * ```
+	 *
+	 * @param ids - The assets to delete.
+	 *
+	 * @public
+	 */
+	deleteAssets(ids: TLAssetId[]) {
+		this._deleteAssets(ids)
+		return this
+	}
+
+	/** @internal */
+	private _deleteAssets = this.history.createCommand(
+		'deleteAssets',
+		(ids: TLAssetId[]) => {
+			if (this.isReadOnly) return
+			if (ids.length <= 0) return
+
+			const prev = compact(ids.map((id) => this.store.get(id)))
+
+			return { data: { ids, prev } }
+		},
+		{
+			do: ({ ids }) => {
+				this.store.remove(ids)
+			},
+			undo: ({ prev }) => {
+				this.store.put(prev)
+			},
+		}
+	)
+
+	/**
 	 * Update one or more assets.
 	 *
 	 * @example
@@ -3628,15 +4228,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	updateAssets(assets: TLAssetPartial[]): this {
+	updateAssets(assets: TLAssetPartial[]) {
 		this._updateAssets(assets)
 		return this
 	}
+
 	/** @internal */
 	private _updateAssets = this.history.createCommand(
 		'updateAssets',
 		(assets: TLAssetPartial[]) => {
-			if (this.instanceState.isReadonly) return
+			if (this.isReadOnly) return
 			if (assets.length <= 0) return
 
 			const snapshots: Record<string, TLAsset> = {}
@@ -3664,92 +4265,123 @@ export class Editor extends EventEmitter<TLEventMap> {
 	)
 
 	/**
-	 * Delete one or more assets.
+	 * Get an asset by its src property.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.deleteAssets(['asset1', 'asset2'])
+	 * editor.getAssetBySource('https://example.com/image.png')
 	 * ```
 	 *
-	 * @param ids - The assets to delete.
+	 * @param src - The source value of the asset.
 	 *
 	 * @public
 	 */
-	deleteAssets(assets: TLAssetId[] | TLAsset[]): this {
-		const ids =
-			typeof assets[0] === 'string'
-				? (assets as TLAssetId[])
-				: (assets as TLAsset[]).map((a) => a.id)
-		this._deleteAssets(ids)
-		return this
+	getAssetBySrc(src: string) {
+		return this.assets.find((a) => a.props.src === src)
 	}
-	/** @internal */
-	private _deleteAssets = this.history.createCommand(
-		'deleteAssets',
-		(ids: TLAssetId[]) => {
-			if (this.instanceState.isReadonly) return
-			if (ids.length <= 0) return
-
-			const prev = compact(ids.map((id) => this.store.get(id)))
-
-			return { data: { ids, prev } }
-		},
-		{
-			do: ({ ids }) => {
-				this.store.remove(ids)
-			},
-			undo: ({ prev }) => {
-				this.store.put(prev)
-			},
-		}
-	)
 
 	/**
 	 * Get an asset by its id.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getAsset('asset1')
+	 * editor.getAssetById('asset1')
 	 * ```
 	 *
-	 * @param asset - The asset (or asset id) to get.
+	 * @param id - The id of the asset.
 	 *
 	 * @public
 	 */
-	getAsset(asset: TLAssetId | TLAsset): TLAsset | undefined {
-		return this.store.get(typeof asset === 'string' ? asset : asset.id) as TLAsset | undefined
+	getAssetById(id: TLAssetId): TLAsset | undefined {
+		return this.store.get(id) as TLAsset | undefined
 	}
 
 	/* --------------------- Shapes --------------------- */
 
 	@computed
-	private get _shapeGeometryCache(): ComputedCache<Geometry2d, TLShape> {
-		return this.store.createComputedCache(
-			'bounds',
-			(shape) => this.getShapeUtil(shape).getGeometry(shape),
-			(a, b) => a.props === b.props
-		)
+	private get _boundsCache(): ComputedCache<Box2d, TLShape> {
+		return this.store.createComputedCache('bounds', (shape) => {
+			return this.getShapeUtil(shape).getBounds(shape)
+		})
 	}
 
 	/**
-	 * Get the geometry of a shape.
+	 * Get the local bounds of a shape.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapeGeometry(myShape)
-	 * editor.getShapeGeometry(myShapeId)
+	 * editor.getBounds(myShape)
 	 * ```
 	 *
-	 * @param shape - The shape (or shape id) to get the geometry for.
+	 * @param shape - The shape to get the bounds for.
 	 *
 	 * @public
 	 */
-	getShapeGeometry<T extends Geometry2d>(shape: TLShape | TLShapeId): T {
-		return this._shapeGeometryCache.get(typeof shape === 'string' ? shape : shape.id)! as T
+	getBounds<T extends TLShape>(shape: T): Box2d {
+		const result = this._boundsCache.get(shape.id) ?? new Box2d()
+		if (result.width === 0 || result.height === 0) {
+			return new Box2d(result.x, result.y, Math.max(result.width, 1), Math.max(result.height, 1))
+		}
+		return result
 	}
 
-	/** @internal */
-	@computed private get _shapeOutlineSegmentsCache(): ComputedCache<Vec2d[][], TLShape> {
+	/**
+	 * Get the local bounds of a shape by its id.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getBoundsById(myShape)
+	 * ```
+	 *
+	 * @param id - The id of the shape to get the bounds for.
+	 *
+	 * @public
+	 */
+	getBoundsById<T extends TLShape>(id: T['id']): Box2d | undefined {
+		return this.getBounds<T>(this.getShapeById<T>(id)!)
+	}
+
+	@computed
+	private get _outlineCache(): ComputedCache<Vec2d[], TLShape> {
+		return this.store.createComputedCache('outline', (shape) => {
+			return this.getShapeUtil(shape).getOutline(shape)
+		})
+	}
+
+	/**
+	 * Get the local outline of a shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getOutline(myShape)
+	 * ```
+	 *
+	 * @param shape - The shape to get the outline for.
+	 *
+	 * @public
+	 */
+	getOutline<T extends TLShape>(shape: T): Vec2d[] {
+		return this._outlineCache.get(shape.id) ?? EMPTY_ARRAY
+	}
+
+	/**
+	 * Get the local outline of a shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getOutlineById(myShape)
+	 * ```
+	 *
+	 * @param id - The shape id to get the outline for.
+	 *
+	 * @public
+	 */
+	getOutlineById(id: TLShapeId): Vec2d[] {
+		return this.getOutline(this.getShapeById(id)!)
+	}
+
+	@computed
+	private get _outlineSegmentsCache(): ComputedCache<Vec2d[][], TLShape> {
 		return this.store.createComputedCache('outline-segments', (shape) => {
 			return this.getShapeUtil(shape).getOutlineSegments(shape)
 		})
@@ -3760,42 +4392,58 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapeOutlineSegments(myShape)
-	 * editor.getShapeOutlineSegments(myShapeId)
+	 * editor.getOutlineSegments(myShape)
 	 * ```
 	 *
-	 * @param shape - The shape (or shape id) to get the outline segments for.
+	 * @param shape - The shape to get the outline segments for.
 	 *
 	 * @public
 	 */
-	getShapeOutlineSegments<T extends TLShape>(shape: T | T['id']): Vec2d[][] {
-		return (
-			this._shapeOutlineSegmentsCache.get(typeof shape === 'string' ? shape : shape.id) ??
-			EMPTY_ARRAY
-		)
+	getOutlineSegments<T extends TLShape>(shape: T): Vec2d[][] {
+		return this._outlineSegmentsCache.get(shape.id) ?? EMPTY_ARRAY
 	}
 
-	/** @internal */
-	@computed private get _shapeHandlesCache(): ComputedCache<TLHandle[] | undefined, TLShape> {
+	/**
+	 * Get the local outline segments of a shape by its Id.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getOutlineSegmentsById(myShapeId)
+	 * ```
+	 *
+	 * @param shape - The shape to get the outline segments for.
+	 *
+	 * @public
+	 */
+	getOutlineSegmentsById(id: TLShapeId): Vec2d[][] {
+		return this.getOutlineSegments(this.getShapeById(id)!)
+	}
+
+	@computed
+	private get handlesCache(): ComputedCache<TLHandle[] | undefined, TLShape> {
 		return this.store.createComputedCache('handles', (shape) => {
 			return this.getShapeUtil(shape).getHandles?.(shape)
 		})
 	}
 
 	/**
-	 * Get the handles (if any) for a shape.
+	 * Get the handles (if any) for a shape by its id.
 	 *
-	 * @example
-	 * ```ts
-	 * editor.getShapeHandles(myShape)
-	 * editor.getShapeHandles(myShapeId)
-	 * ```
-	 *
-	 * @param shape - The shape (or shape id) to get the handles for.
+	 * @param shape - The shape.
 	 * @public
 	 */
-	getShapeHandles<T extends TLShape>(shape: T | T['id']): TLHandle[] | undefined {
-		return this._shapeHandlesCache.get(typeof shape === 'string' ? shape : shape.id)
+	getHandlesById<T extends TLShape>(id: T['id']): TLHandle[] | undefined {
+		return this.handlesCache.get(id)
+	}
+
+	/**
+	 * Get the handles (if any) for a shape.
+	 *
+	 * @param shape - The shape.
+	 * @public
+	 */
+	getHandles<T extends TLShape>(shape: T): TLHandle[] | undefined {
+		return this.getHandlesById<T>(shape.id)
 	}
 
 	/**
@@ -3806,18 +4454,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapeLocalTransform(myShape)
+	 * editor.getTransform(myShape)
 	 * ```
 	 *
 	 * @param shape - The shape to get the local transform for.
 	 *
 	 * @public
 	 */
-	getShapeLocalTransform(shape: TLShape | TLShapeId): Matrix2d {
-		const id = typeof shape === 'string' ? shape : shape.id
-		const freshShape = this.getShape(id)
-		if (!freshShape) throw Error('Editor.getTransform: shape not found')
-		return Matrix2d.Identity().translate(freshShape.x, freshShape.y).rotate(freshShape.rotation)
+	getTransform(shape: TLShape) {
+		return Matrix2d.Compose(Matrix2d.Translate(shape.x, shape.y), Matrix2d.Rotate(shape.rotation))
 	}
 
 	/**
@@ -3825,19 +4470,19 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @internal
 	 */
-	@computed private get _shapePageTransformCache(): ComputedCache<Matrix2d, TLShape> {
+	@computed private get _pageTransformCache(): ComputedCache<Matrix2d, TLShape> {
 		return this.store.createComputedCache<Matrix2d, TLShape>('pageTransformCache', (shape) => {
 			if (isPageId(shape.parentId)) {
-				return this.getShapeLocalTransform(shape)
+				return this.getTransform(shape)
 			}
 
 			// If the shape's parent doesn't exist yet (e.g. when merging in changes from remote in the wrong order)
 			// then we can't compute the transform yet, so just return the identity matrix.
 			// In the future we should look at creating a store update mechanism that understands and preserves
 			// ordering.
-			const parentTransform =
-				this._shapePageTransformCache.get(shape.parentId) ?? Matrix2d.Identity()
-			return Matrix2d.Compose(parentTransform, this.getShapeLocalTransform(shape)!)
+			const parent = this._pageTransformCache.get(shape.parentId) ?? Matrix2d.Identity()
+
+			return Matrix2d.Compose(parent, this.getTransform(shape))
 		})
 	}
 
@@ -3846,68 +4491,188 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapeParentTransform(myShape)
+	 * editor.getParentTransform(myShape)
 	 * ```
 	 *
-	 * @param shape - The shape (or shape id) to get the parent transform for.
+	 * @param shape - The shape to get the parent transform for.
 	 *
 	 * @public
 	 */
-	getShapeParentTransform(shape: TLShape | TLShapeId): Matrix2d {
-		const id = typeof shape === 'string' ? shape : shape.id
-		const freshShape = this.getShape(id)
-		if (!freshShape || isPageId(freshShape.parentId)) return Matrix2d.Identity()
-		return this._shapePageTransformCache.get(freshShape.parentId) ?? Matrix2d.Identity()
+	getParentTransform(shape: TLShape) {
+		if (isPageId(shape.parentId)) {
+			return Matrix2d.Identity()
+		}
+		return this._pageTransformCache.get(shape.parentId) ?? Matrix2d.Identity()
 	}
 
 	/**
-	 * Get the transform of a shape in the current page space.
+	 * Get the page transform (or absolute transform) of a shape.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapePageTransform(myShape)
-	 * editor.getShapePageTransform(myShapeId)
+	 * editor.getPageTransform(myShape)
 	 * ```
 	 *
-	 * @param shape - The shape (or shape id) to get the page transform for.
+	 * @param shape - The shape to get the page transform for.
 	 *
 	 * @public
 	 */
-	getShapePageTransform(shape: TLShape | TLShapeId): Matrix2d {
-		const id = typeof shape === 'string' ? shape : this.getShape(shape)!.id
-		return this._shapePageTransformCache.get(id) ?? Matrix2d.Identity()
+	getPageTransform(shape: TLShape) {
+		return this.getPageTransformById(shape.id)
 	}
 
-	/** @internal */
-	@computed private get _shapePageBoundsCache(): ComputedCache<Box2d, TLShape> {
+	/**
+	 * Get the page transform (or absolute transform) of a shape by its id.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPageTransformById(myShape)
+	 * ```
+	 *
+	 * @param id - The if of the shape to get the page transform for.
+	 *
+	 * @public
+	 */
+	getPageTransformById(id: TLShapeId) {
+		return this._pageTransformCache.get(id)
+	}
+
+	/**
+	 * Get the page point (or absolute point) of a shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPagePoint(myShape)
+	 * ```
+	 *
+	 * @param shape - The shape to get the page point for.
+	 *
+	 * @public
+	 */
+	getPagePointById(id: TLShapeId) {
+		const pageTransform = this.getPageTransformById(id)
+		if (!pageTransform) return
+		return Matrix2d.applyToPoint(pageTransform, new Vec2d())
+	}
+
+	/**
+	 * Get the page point (or absolute point) of a shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPagePoint(myShape)
+	 * ```
+	 *
+	 * @param shape - The shape to get the page point for.
+	 *
+	 * @public
+	 */
+	getPageCenter(shape: TLShape) {
+		const pageTransform = this.getPageTransformById(shape.id)
+		if (!pageTransform) return null
+		const util = this.getShapeUtil(shape)
+		const center = util.center(shape)
+		return Matrix2d.applyToPoint(pageTransform, center)
+	}
+
+	/**
+	 * Get the page point (or absolute point) of a shape by its id.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPagePoint(myShape)
+	 * ```
+	 *
+	 * @param id - The shape id to get the page point for.
+	 *
+	 * @public
+	 */
+	getPageCenterById(id: TLShapeId) {
+		const shape = this.getShapeById(id)!
+		return this.getPageCenter(shape)
+	}
+
+	/**
+	 * Get the page rotation (or absolute rotation) of a shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPageRotation(myShape)
+	 * ```
+	 *
+	 * @param shape - The shape to get the page rotation for.
+	 *
+	 * @public
+	 */
+	getPageRotation(shape: TLShape): number {
+		return this.getPageRotationById(shape.id)
+	}
+
+	/**
+	 * Get the page rotation (or absolute rotation) of a shape by its id.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPageRotationById(myShapeId)
+	 * ```
+	 *
+	 * @param id - The id of the shape to get the page rotation for.
+	 */
+	getPageRotationById(id: TLShapeId): number {
+		const pageTransform = this.getPageTransformById(id)
+		if (pageTransform) {
+			return Matrix2d.Decompose(pageTransform).rotation
+		}
+		return 0
+	}
+
+	/**
+	 * A cache of axis aligned page bounding boxes.
+	 *
+	 * @internal
+	 */
+	@computed private get _pageBoundsCache(): ComputedCache<Box2d, TLShape> {
 		return this.store.createComputedCache<Box2d, TLShape>('pageBoundsCache', (shape) => {
-			const pageTransform = this._shapePageTransformCache.get(shape.id)
+			const pageTransform = this._pageTransformCache.get(shape.id)
 
 			if (!pageTransform) return new Box2d()
 
-			const result = Box2d.FromPoints(
-				Matrix2d.applyToPoints(pageTransform, this.getShapeGeometry(shape).vertices)
-			)
+			const result = Box2d.FromPoints(Matrix2d.applyToPoints(pageTransform, this.getOutline(shape)))
 
 			return result
 		})
 	}
 
 	/**
-	 * Get the bounds of a shape in the current page space.
+	 * Get the page (or absolute) bounds of a shape.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapePageBounds(myShape)
-	 * editor.getShapePageBounds(myShapeId)
+	 * editor.getPageBounds(myShape)
 	 * ```
 	 *
-	 * @param shape - The shape (or shape id) to get the bounds for.
+	 * @param shape - The shape to get the bounds for.
 	 *
 	 * @public
 	 */
-	getShapePageBounds(shape: TLShape | TLShapeId): Box2d | undefined {
-		return this._shapePageBoundsCache.get(typeof shape === 'string' ? shape : shape.id)
+	getPageBounds(shape: TLShape): Box2d | undefined {
+		return this.getPageBoundsById(shape.id)
+	}
+
+	/**
+	 * Get the page (or absolute) bounds of a shape by its id.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getPageBoundsById(myShape)
+	 * ```
+	 *
+	 * @param id - The id of the shape to get the page bounds for.
+	 *
+	 * @public
+	 */
+	getPageBoundsById(id: TLShapeId): Box2d | undefined {
+		return this._pageBoundsCache.get(id)
 	}
 
 	/**
@@ -3915,11 +4680,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @internal
 	 */
-	@computed private get _shapeClipPathCache(): ComputedCache<string, TLShape> {
+	@computed private get _clipPathCache(): ComputedCache<string, TLShape> {
 		return this.store.createComputedCache<string, TLShape>('clipPathCache', (shape) => {
-			const pageMask = this._shapeMaskCache.get(shape.id)
+			const pageMask = this._pageMaskCache.get(shape.id)
 			if (!pageMask) return undefined
-			const pageTransform = this._shapePageTransformCache.get(shape.id)
+			const pageTransform = this._pageTransformCache.get(shape.id)
 			if (!pageTransform) return undefined
 
 			if (pageMask.length === 0) {
@@ -3937,95 +4702,106 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * const clipPath = editor.getShapeClipPath(shape)
-	 * const clipPath = editor.getShapeClipPath(shape.id)
+	 * const clipPath = editor.getClipPathById(shape.id)
 	 * ```
 	 *
-	 * @param shape - The shape (or shape id) to get the clip path for.
+	 * @param id - The shape id.
 	 *
 	 * @returns The clip path or undefined.
 	 *
 	 * @public
 	 */
-	getShapeClipPath(shape: TLShape | TLShapeId): string | undefined {
-		return this._shapeClipPathCache.get(typeof shape === 'string' ? shape : shape.id)
+	getClipPathById(id: TLShapeId) {
+		return this._clipPathCache.get(id)
 	}
 
-	/** @internal */
-	@computed private get _shapeMaskCache(): ComputedCache<Vec2d[], TLShape> {
-		return this.store.createComputedCache<Vec2d[], TLShape>('pageMaskCache', (shape) => {
+	/**
+	 * A cache of page masks used for clipping.
+	 *
+	 * @internal
+	 */
+	@computed private get _pageMaskCache(): ComputedCache<VecLike[], TLShape> {
+		return this.store.createComputedCache<VecLike[], TLShape>('pageMaskCache', (shape) => {
 			if (isPageId(shape.parentId)) {
 				return undefined
 			}
 
-			const frameAncestors = this.getShapeAncestors(shape.id).filter((shape) =>
-				this.isShapeOfType<TLFrameShape>(shape, 'frame')
+			const frameAncestors = this.getAncestorsById(shape.id).filter((shape) =>
+				this.isShapeOfType(shape, FrameShapeUtil)
 			)
 
 			if (frameAncestors.length === 0) return undefined
 
 			const pageMask = frameAncestors
-				.map<Vec2d[] | undefined>((s) =>
-					// Apply the frame transform to the frame outline to get the frame outline in the current page space
-					this._shapePageTransformCache.get(s.id)!.applyToPoints(this.getShapeGeometry(s).vertices)
+				.map<VecLike[] | undefined>((s) =>
+					// Apply the frame transform to the frame outline to get the frame outline in page space
+					Matrix2d.applyToPoints(this._pageTransformCache.get(s.id)!, this.getOutline(s))
 				)
-				.reduce((acc, b) => {
-					if (!(b && acc)) return undefined
-					const intersection = intersectPolygonPolygon(acc, b)
-					if (intersection) {
-						return intersection.map(Vec2d.Cast)
-					}
-					return undefined
-				})
+				.reduce((acc, b) => (b && acc ? intersectPolygonPolygon(acc, b) ?? undefined : undefined))
 
 			return pageMask
 		})
 	}
 
 	/**
-	 * Get the mask (in the current page space) for a shape.
+	 * Get the page mask for a shape.
 	 *
 	 * @example
 	 * ```ts
-	 * const pageMask = editor.getShapeMask(shape.id)
+	 * const pageMask = editor.getPageMaskById(shape.id)
 	 * ```
 	 *
-	 * @param id - The id of the shape to get the mask for.
+	 * @param id - The id of the shape to get the page mask for.
 	 *
-	 * @returns The mask for the shape.
+	 * @returns The page mask for the shape.
 	 *
 	 * @public
 	 */
-	getShapeMask(shape: TLShapeId | TLShape): VecLike[] | undefined {
-		return this._shapeMaskCache.get(typeof shape === 'string' ? shape : shape.id)
+	getPageMaskById(id: TLShapeId) {
+		return this._pageMaskCache.get(id)
 	}
 
 	/**
-	 * Get the bounds of a shape in the current page space, incorporating any masks. For example, if the
+	 * Get the page (or absolute) bounds of a shape, incorporating any masks. For example, if the
 	 * shape were the child of a frame and was half way out of the frame, the bounds would be the half
 	 * of the shape that was in the frame.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapeMaskedPageBounds(myShape)
-	 * editor.getShapeMaskedPageBounds(myShapeId)
+	 * editor.getMaskedPageBounds(myShape)
 	 * ```
 	 *
 	 * @param shape - The shape to get the masked bounds for.
 	 *
 	 * @public
 	 */
-	getShapeMaskedPageBounds(shape: TLShapeId | TLShape): Box2d | undefined {
-		if (typeof shape !== 'string') shape = shape.id
-		const pageBounds = this._shapePageBoundsCache.get(shape)
+	getMaskedPageBounds(shape: TLShape): Box2d | undefined {
+		return this.getMaskedPageBoundsById(shape.id)
+	}
+
+	/**
+	 * Get the page (or absolute) bounds of a shape by its id, incorporating any masks. For example,
+	 * if the shape were the child of a frame and was half way out of the frame, the bounds would be
+	 * the half of the shape that was in the frame.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getMaskedPageBoundsById(myShape)
+	 * ```
+	 *
+	 * @param id - The id of the shape to get the masked page bounds for.
+	 *
+	 * @public
+	 */
+	getMaskedPageBoundsById(id: TLShapeId): Box2d | undefined {
+		const pageBounds = this._pageBoundsCache.get(id)
 		if (!pageBounds) return
-		const pageMask = this._shapeMaskCache.get(shape)
+		const pageMask = this._pageMaskCache.get(id)
 		if (pageMask) {
 			const intersection = intersectPolygonPolygon(pageMask, pageBounds.corners)
 			if (!intersection) return
 			return Box2d.FromPoints(intersection)
 		}
-
 		return pageBounds
 	}
 
@@ -4034,19 +4810,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * const ancestors = editor.getShapeAncestors(myShape)
-	 * const ancestors = editor.getShapeAncestors(myShapeId)
+	 * const ancestors = editor.getAncestors(myShape)
 	 * ```
 	 *
-	 * @param shape - The shape (or shape id) to get the ancestors for.
+	 * @param shape - The shape to get the ancestors for.
 	 *
 	 * @public
 	 */
-	getShapeAncestors(shape: TLShapeId | TLShape, acc: TLShape[] = []): TLShape[] {
-		const id = typeof shape === 'string' ? shape : shape.id
-		const freshShape = this.getShape(id)
-		if (!freshShape) return acc
-		const parentId = freshShape.parentId
+	getAncestors(shape: TLShape, acc: TLShape[] = []): TLShape[] {
+		const parentId = shape.parentId
 		if (isPageId(parentId)) {
 			acc.reverse()
 			return acc
@@ -4055,7 +4827,25 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const parent = this.store.get(parentId)
 		if (!parent) return acc
 		acc.push(parent)
-		return this.getShapeAncestors(parent, acc)
+		return this.getAncestors(parent, acc)
+	}
+
+	/**
+	 * Get the ancestors of a shape by its id.
+	 *
+	 * @example
+	 * ```ts
+	 * const ancestors = editor.getAncestorsById(myShape)
+	 * ```
+	 *
+	 * @param id - The id of the shape to get the ancestors for.
+	 *
+	 * @public
+	 */
+	getAncestorsById(id: TLShapeId, acc: TLShape[] = []): TLShape[] {
+		const shape = this.getShapeById(id)
+		if (!shape) return acc
+		return this.getAncestors(shape, acc)
 	}
 
 	/**
@@ -4063,29 +4853,30 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * const ancestor = editor.findShapeAncestor(myShape)
-	 * const ancestor = editor.findShapeAncestor(myShape.id)
-	 * const ancestor = editor.findShapeAncestor(myShape.id, (shape) => shape.type === 'frame')
+	 * const ancestor = editor.findAncestor(myShape)
 	 * ```
 	 *
 	 * @param shape - The shape to check the ancestors for.
 	 *
 	 * @public
 	 */
-	findShapeAncestor(
-		shape: TLShape | TLShapeId,
-		predicate: (parent: TLShape) => boolean
-	): TLShape | undefined {
-		const id = typeof shape === 'string' ? shape : shape.id
-		const freshShape = this.getShape(id)
-		if (!freshShape) return
+	findAncestor(shape: TLShape, predicate: (parent: TLShape) => boolean): TLShape | undefined {
+		const parentId = shape.parentId
 
-		const parentId = freshShape.parentId
-		if (isPageId(parentId)) return
+		if (isPageId(parentId)) {
+			return undefined
+		}
 
-		const parent = this.getShape(parentId)
-		if (!parent) return
-		return predicate(parent) ? parent : this.findShapeAncestor(parent, predicate)
+		const parent = this.getShapeById(parentId)
+
+		if (parent) {
+			if (predicate(parent)) {
+				return parent
+			}
+			return this.findAncestor(parent, predicate)
+		}
+
+		return undefined
 	}
 
 	/**
@@ -4096,54 +4887,45 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	hasAncestor(shape: TLShape | TLShapeId | undefined, ancestorId: TLShapeId): boolean {
-		const id = typeof shape === 'string' ? shape : shape?.id
-		const freshShape = id && this.getShape(id)
-		if (!freshShape) return false
-		if (freshShape.parentId === ancestorId) return true
-		return this.hasAncestor(this.getShapeParent(freshShape), ancestorId)
+	hasAncestor(shape: TLShape | undefined, ancestorId: TLShapeId): boolean {
+		if (!shape) return false
+		if (shape.parentId === ancestorId) return true
+		return this.hasAncestor(this.getParentShape(shape), ancestorId)
 	}
 
 	/**
 	 * Get the common ancestor of two or more shapes that matches a predicate.
 	 *
-	 * @param shapes - The shapes (or shape ids) to check.
+	 * @param shapes - The shapes to check.
 	 * @param predicate - The predicate to match.
 	 */
 	findCommonAncestor(
-		shapes: TLShape[] | TLShapeId[],
+		shapes: TLShape[],
 		predicate?: (shape: TLShape) => boolean
 	): TLShapeId | undefined {
 		if (shapes.length === 0) {
 			return
 		}
-
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-		const freshShapes = compact(ids.map((id) => this.getShape(id)))
-
-		if (freshShapes.length === 1) {
-			const parentId = freshShapes[0].parentId
+		if (shapes.length === 1) {
+			const parentId = shapes[0].parentId
 			if (isPageId(parentId)) {
 				return
 			}
-			return predicate ? this.findShapeAncestor(freshShapes[0], predicate)?.id : parentId
+			return predicate ? this.findAncestor(shapes[0], predicate)?.id : parentId
 		}
 
-		const [nodeA, ...others] = freshShapes
-		let ancestor = this.getShapeParent(nodeA)
+		const [nodeA, ...others] = shapes
+		let ancestor = this.getParentShape(nodeA)
 		while (ancestor) {
 			// TODO: this is not ideal, optimize
 			if (predicate && !predicate(ancestor)) {
-				ancestor = this.getShapeParent(ancestor)
+				ancestor = this.getParentShape(ancestor)
 				continue
 			}
 			if (others.every((shape) => this.hasAncestor(shape, ancestor!.id))) {
 				return ancestor!.id
 			}
-			ancestor = this.getShapeParent(ancestor)
+			ancestor = this.getParentShape(ancestor)
 		}
 		return undefined
 	}
@@ -4151,34 +4933,32 @@ export class Editor extends EventEmitter<TLEventMap> {
 	/**
 	 * Check whether a shape or its parent is locked.
 	 *
-	 * @param shape - The shape (or shape id) to check.
+	 * @param id - The id of the shape to check.
 	 *
 	 * @public
 	 */
-	isShapeOrAncestorLocked(shape?: TLShape): boolean
-	isShapeOrAncestorLocked(id?: TLShapeId): boolean
-	isShapeOrAncestorLocked(arg?: TLShape | TLShapeId): boolean {
-		const shape = typeof arg === 'string' ? this.getShape(arg) : arg
+	isShapeOrAncestorLocked(shape?: TLShape): boolean {
 		if (shape === undefined) return false
 		if (shape.isLocked) return true
-		return this.isShapeOrAncestorLocked(this.getShapeParent(shape))
+		return this.isShapeOrAncestorLocked(this.getParentShape(shape))
 	}
 
 	/**
-	 * The bounds of the current page (the common bounds of all of the shapes on the page).
+	 * The common bounds of all of the shapes on the page.
 	 *
 	 * @public
 	 */
-	@computed get currentPageBounds(): Box2d | undefined {
-		let commonBounds: Box2d | undefined
+	@computed get allShapesCommonBounds(): Box2d | null {
+		let commonBounds = null as Box2d | null
 
 		this.currentPageShapeIds.forEach((shapeId) => {
-			const bounds = this.getShapeMaskedPageBounds(shapeId)
-			if (!bounds) return
-			if (!commonBounds) {
-				commonBounds = bounds.clone()
-			} else {
-				commonBounds = commonBounds.expand(bounds)
+			const bounds = this.getMaskedPageBoundsById(shapeId)
+			if (bounds) {
+				if (commonBounds) {
+					commonBounds.expand(bounds)
+				} else {
+					commonBounds = bounds.clone()
+				}
 			}
 		})
 
@@ -4186,185 +4966,55 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * Get the top-most selected shape at the given point, ignoring groups.
+	 * Get the corners of a shape in page space.
 	 *
-	 * @param point - The point to check.
+	 * @example
+	 * ```ts
+	 * const corners = editor.getPageCorners(myShape)
+	 * ```
 	 *
-	 * @returns The top-most selected shape at the given point, or undefined if there is no shape at the point.
+	 * @param shape - The shape to get the corners for.
+	 *
+	 * @public
 	 */
-	getSelectedShapeAtPoint(point: VecLike): TLShape | undefined {
-		const { selectedShapeIds } = this
-		return this.currentPageShapesSorted
-			.filter((shape) => shape.type !== 'group' && selectedShapeIds.includes(shape.id))
-			.reverse() // findlast
-			.find((shape) => this.isPointInShape(shape, point, { hitInside: true, margin: 0 }))
+	getPageCorners(shape: TLShape): Vec2d[] {
+		const ancestors = this.getAncestors(shape)
+		const corners = this.getBounds(shape).corners
+
+		const transform = Matrix2d.Compose(
+			...ancestors.flatMap((s) => [Matrix2d.Translate(s.x, s.y), Matrix2d.Rotate(s.rotation)]),
+			Matrix2d.Translate(shape.x, shape.y),
+			Matrix2d.Rotate(shape.rotation, 0, 0)
+		)
+
+		return Matrix2d.applyToPoints(transform, corners)
 	}
 
 	/**
-	 * Get the shape at the current point.
+	 * Test whether a point (in page space) will will a shape. This method takes into account masks,
+	 * such as when a shape is the child of a frame and is partially clipped by the frame.
 	 *
-	 * @param point - The point to check.
-	 * @param opts - Options for the check: `hitInside` to check if the point is inside the shape, `margin` to check if the point is within a margin of the shape, `hitFrameInside` to check if the point is inside the frame, and `filter` to filter the shapes to check.
+	 * @example
+	 * ```ts
+	 * editor.isPointInShape({ x: 100, y: 100 }, myShape)
+	 * ```
 	 *
-	 * @returns The shape at the given point, or undefined if there is no shape at the point.
+	 * @param point - The page point to test.
+	 * @param shape - The shape to test against.
+	 *
+	 * @public
 	 */
-	getShapeAtPoint(
-		point: VecLike,
-		opts = {} as {
-			margin?: number
-			hitInside?: boolean
-			hitLabels?: boolean
-			hitFrameInside?: boolean
-			filter?: (shape: TLShape) => boolean
-		}
-	): TLShape | undefined {
-		const {
-			viewportPageBounds,
-			zoomLevel,
-			currentPageShapesSorted: sortedShapesOnCurrentPage,
-		} = this
-		const {
-			filter,
-			margin = 0,
-			hitLabels = false,
-			hitInside = false,
-			hitFrameInside = false,
-		} = opts
+	isPointInShape(point: VecLike, shape: TLShape): boolean {
+		const util = this.getShapeUtil(shape)
 
-		let inHollowSmallestArea = Infinity
-		let inHollowSmallestAreaHit: TLShape | null = null
+		const pageMask = this._pageMaskCache.get(shape.id)
 
-		let inMarginClosestToEdgeDistance = Infinity
-		let inMarginClosestToEdgeHit: TLShape | null = null
-
-		const shapesToCheck = sortedShapesOnCurrentPage.filter((shape) => {
-			if (this.isShapeOfType(shape, 'group')) return false
-			const pageMask = this.getShapeMask(shape)
-			if (pageMask && !pointInPolygon(point, pageMask)) return false
-			if (filter) return filter(shape)
-			return true
-		})
-
-		for (let i = shapesToCheck.length - 1; i >= 0; i--) {
-			const shape = shapesToCheck[i]
-			const geometry = this.getShapeGeometry(shape)
-			const isGroup = geometry instanceof Group2d
-
-			const pointInShapeSpace = this.getPointInShapeSpace(shape, point)
-
-			// Check labels first
-			if (
-				this.isShapeOfType<TLArrowShape>(shape, 'arrow') ||
-				(this.isShapeOfType<TLGeoShape>(shape, 'geo') && shape.props.fill === 'none')
-			) {
-				if (shape.props.text.trim()) {
-					// let's check whether the shape has a label and check that
-					for (const childGeometry of (geometry as Group2d).children) {
-						if (childGeometry.isLabel && childGeometry.isPointInBounds(pointInShapeSpace)) {
-							return shape
-						}
-					}
-				}
-			}
-
-			if (this.isShapeOfType(shape, 'frame')) {
-				// On the rare case that we've hit a frame, test again hitInside to be forced true;
-				// this prevents clicks from passing through the body of a frame to shapes behhind it.
-
-				// If the hit is within the frame's outer margin, then select the frame
-				const distance = geometry.distanceToPoint(pointInShapeSpace, hitInside)
-				if (Math.abs(distance) <= margin) {
-					return inMarginClosestToEdgeHit || shape
-				}
-
-				if (geometry.hitTestPoint(pointInShapeSpace, 0, true)) {
-					// Once we've hit a frame, we want to end the search. If we have hit a shape
-					// already, then this would either be above the frame or a child of the frame,
-					// so we want to return that. Otherwise, the point is in the empty space of the
-					// frame. If `hitFrameInside` is true (e.g. used drawing an arrow into the
-					// frame) we the frame itself; other wise, (e.g. when hovering or pointing)
-					// we would want to return null.
-					return (
-						inMarginClosestToEdgeHit ||
-						inHollowSmallestAreaHit ||
-						(hitFrameInside ? shape : undefined)
-					)
-				}
-				continue
-			}
-
-			let distance: number
-
-			if (isGroup) {
-				let minDistance = Infinity
-				for (const childGeometry of geometry.children) {
-					if (childGeometry.isLabel && !hitLabels) continue
-
-					// hit test the all of the child geometries that aren't labels
-					const tDistance = childGeometry.distanceToPoint(pointInShapeSpace, hitInside)
-					if (tDistance < minDistance) {
-						minDistance = tDistance
-					}
-				}
-
-				distance = minDistance
-			} else {
-				distance = geometry.distanceToPoint(pointInShapeSpace, hitInside)
-			}
-
-			if (geometry.isClosed) {
-				// For closed shapes, the distance will be positive if outside of
-				// the shape or negative if inside of the shape. If the distance
-				// is greater than the margin, then it's a miss. Otherwise...
-
-				if (distance <= margin) {
-					if (geometry.isFilled || (isGroup && geometry.children[0].isFilled)) {
-						// If the shape is filled, then it's a hit. Remember, we're
-						// starting from the TOP-MOST shape in z-index order, so any
-						// other hits would be occluded by the shape.
-						return inMarginClosestToEdgeHit || shape
-					} else {
-						// If the shape is bigger than the viewport, then skip it.
-						if (this.getShapePageBounds(shape)!.contains(viewportPageBounds)) continue
-
-						// For hollow shapes...
-						if (Math.abs(distance) < margin) {
-							// We want to preference shapes where we're inside of the
-							// shape margin; and we would want to hit the shape with the
-							// edge closest to the point.
-							if (Math.abs(distance) < inMarginClosestToEdgeDistance) {
-								inMarginClosestToEdgeDistance = Math.abs(distance)
-								inMarginClosestToEdgeHit = shape
-							}
-						} else if (!inMarginClosestToEdgeHit) {
-							// If we're not within margin distnce to any edge, and if the
-							// shape is hollow, then we want to hit the shape with the
-							// smallest area. (There's a bug here with self-intersecting
-							// shapes, like a closed drawing of an "8", but that's a bigger
-							// problem to solve.)
-							const { area } = geometry
-							if (area < inHollowSmallestArea) {
-								inHollowSmallestArea = area
-								inHollowSmallestAreaHit = shape
-							}
-						}
-					}
-				}
-			} else {
-				// For open shapes (e.g. lines or draw shapes) always use the margin.
-				// If the distance is less than the margin, return the shape as the hit.
-				if (distance < HIT_TEST_MARGIN / zoomLevel) {
-					return shape
-				}
-			}
+		if (pageMask) {
+			const hit = pointInPolygon(point, pageMask)
+			if (!hit) return false
 		}
 
-		// If we haven't hit any filled shapes or frames, then return either
-		// the shape who we hit within the margin (and of those, the one that
-		// had the shortest distance between the point and the shape edge),
-		// or else the hollow shape with the smallest area—or if we didn't hit
-		// any margins or any hollow shapes, then null.
-		return inMarginClosestToEdgeHit || inHollowSmallestAreaHit || undefined
+		return util.hitTestPoint(shape, this.getPointInShapeSpace(shape, point))
 	}
 
 	/**
@@ -4373,60 +5023,27 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @example
 	 * ```ts
 	 * editor.getShapesAtPoint({ x: 100, y: 100 })
-	 * editor.getShapesAtPoint({ x: 100, y: 100 }, { hitInside: true, exact: true })
 	 * ```
 	 *
 	 * @param point - The page point to test.
 	 *
 	 * @public
 	 */
-	getShapesAtPoint(
-		point: VecLike,
-		opts = {} as { margin?: number; hitInside?: boolean }
-	): TLShape[] {
-		return this.currentPageShapes.filter((shape) => this.isPointInShape(shape, point, opts))
+	getShapesAtPoint(point: VecLike): TLShape[] {
+		return this.shapesArray.filter((shape) => {
+			// Check the page mask too
+			const pageMask = this._pageMaskCache.get(shape.id)
+			if (pageMask) {
+				return pointInPolygon(point, pageMask)
+			}
+
+			// Otherwise, use the shape's own hit test method
+			return this.getShapeUtil(shape).hitTestPoint(shape, this.getPointInShapeSpace(shape, point))
+		})
 	}
 
 	/**
-	 * Test whether a point (in the current page space) will will a shape. This method takes into account masks,
-	 * such as when a shape is the child of a frame and is partially clipped by the frame.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.isPointInShape({ x: 100, y: 100 }, myShape)
-	 * ```
-	 *
-	 * @param shape - The shape to test against.
-	 * @param point - The page point to test (in the current page space).
-	 * @param hitInside - Whether to count as a hit if the point is inside of a closed shape.
-	 *
-	 * @public
-	 */
-
-	isPointInShape(
-		shape: TLShape | TLShapeId,
-		point: VecLike,
-		opts = {} as {
-			margin?: number
-			hitInside?: boolean
-		}
-	): boolean {
-		const { hitInside = false, margin = 0 } = opts
-		const id = typeof shape === 'string' ? shape : shape.id
-		// If the shape is masked, and if the point falls outside of that
-		// mask, then it's defintely a miss—we don't need to test further.
-		const pageMask = this.getShapeMask(id)
-		if (pageMask && !pointInPolygon(point, pageMask)) return false
-
-		return this.getShapeGeometry(id).hitTestPoint(
-			this.getPointInShapeSpace(shape, point),
-			margin,
-			hitInside
-		)
-	}
-
-	/**
-	 * Convert a point in the current page space to a point in the local space of a shape. For example, if a
+	 * Convert a point in page space to a point in the local space of a shape. For example, if a
 	 * shape's page point were `{ x: 100, y: 100 }`, a page point at `{ x: 110, y: 110 }` would be at
 	 * `{ x: 10, y: 10 }` in the shape's local space.
 	 *
@@ -4440,17 +5057,18 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	getPointInShapeSpace(shape: TLShape | TLShapeId, point: VecLike): Vec2d {
-		const id = typeof shape === 'string' ? shape : shape.id
-		return this._shapePageTransformCache.get(id)!.clone().invert().applyToPoint(point)
+	getPointInShapeSpace(shape: TLShape, point: VecLike): Vec2d {
+		return Matrix2d.applyToPoint(Matrix2d.Inverse(this.getPageTransform(shape)!), point)
 	}
 
 	/**
-	 * Convert a delta in the current page space to a point in the local space of a shape's parent.
+	 * Convert a delta in page space to a point in the local space of a shape. For example, if a
+	 * shape's page point were `{ x: 100, y: 100 }`, a page point at `{ x: 110, y: 110 }` would be at
+	 * `{ x: 10, y: 10 }` in the shape's local space.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getPointInParentSpace(myShape.id, { x: 100, y: 100 })
+	 * editor.getPointInShapeSpace(myShape.id, { x: 100, y: 100 })
 	 * ```
 	 *
 	 * @param shape - The shape to get the point in the local space of.
@@ -4458,15 +5076,83 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	getPointInParentSpace(shape: TLShapeId | TLShape, point: VecLike): Vec2d {
-		const id = typeof shape === 'string' ? shape : shape.id
-		const freshShape = this.getShape(id)
-		if (!freshShape) return new Vec2d(0, 0)
-		if (isPageId(freshShape.parentId)) return Vec2d.From(point)
+	getPointInParentSpace(shapeId: TLShapeId, point: VecLike): Vec2d {
+		const shape = this.getShapeById(shapeId)!
+		if (!shape) {
+			return new Vec2d(0, 0)
+		}
+		if (isPageId(shape.parentId)) return Vec2d.From(point)
 
-		const parentTransform = this.getShapePageTransform(freshShape.parentId)
+		const parentTransform = this.getPageTransformById(shape.parentId)
 		if (!parentTransform) return Vec2d.From(point)
-		return parentTransform.clone().invert().applyToPoint(point)
+
+		return Matrix2d.applyToPoint(Matrix2d.Inverse(parentTransform), point)
+	}
+
+	/**
+	 * Convert a delta in page space to a delta in the local space of a shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getDeltaInShapeSpace(myShape, { x: 100, y: 100 })
+	 * ```
+	 *
+	 * @param shape - The shape to get the delta in the local space of.
+	 * @param delta - The page delta to convert.
+	 *
+	 * @public
+	 */
+	getDeltaInShapeSpace(shape: TLShape, delta: VecLike): Vec2d {
+		const pageTransform = this.getPageTransform(shape)
+		if (!pageTransform) return Vec2d.From(delta)
+		return Vec2d.Rot(delta, -Matrix2d.Decompose(pageTransform).rotation)
+	}
+
+	/**
+	 * Convert a delta in page space to a delta in the parent space of a shape.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getDeltaInParentSpace(myShape, { x: 100, y: 100 })
+	 * ```
+	 *
+	 * @param shape - The shape to get the delta in the parent space of.
+	 * @param delta - The page delta to convert.
+	 *
+	 * @public
+	 */
+	getDeltaInParentSpace(shape: TLShape, delta: VecLike): Vec2d {
+		if (isPageId(shape.parentId)) return Vec2d.From(delta)
+
+		const parent = this.getShapeById(shape.parentId)
+		if (!parent) return Vec2d.From(delta)
+
+		return this.getDeltaInShapeSpace(parent, delta)
+	}
+
+	/**
+	 * For a given set of ids, get a map containing the ids of their parents and the children of those
+	 * parents.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.getParentsMappedToChildren(['id1', 'id2', 'id3'])
+	 * ```
+	 *
+	 * @param ids - The ids to get the parents and children of.
+	 *
+	 * @public
+	 */
+	getParentsMappedToChildren(ids: TLShapeId[]) {
+		const shapes = ids.map((id) => this.store.get(id)!)
+		const parents = new Map<TLParentId, Set<TLShape>>()
+		shapes.forEach((shape) => {
+			if (!parents.has(shape.parentId)) {
+				parents.set(shape.parentId, new Set())
+			}
+			parents.get(shape.parentId)?.add(shape)
+		})
+		return parents
 	}
 
 	/**
@@ -4474,14 +5160,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.currentPageShapes
+	 * editor.shapesArray
 	 * ```
 	 *
 	 * @readonly
 	 *
 	 * @public
 	 */
-	@computed get currentPageShapes() {
+	@computed get shapesArray() {
 		return Array.from(this.currentPageShapeIds, (id) => this.store.get(id)! as TLShape)
 	}
 
@@ -4491,17 +5177,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.currentPageShapesSorted
+	 * editor.sortedShapesArray
 	 * ```
 	 *
 	 * @readonly
 	 *
 	 * @public
 	 */
-	@computed get currentPageShapesSorted(): TLShape[] {
-		// todo: consider making into a function call that includes options for selected-only, rendering, etc.
-		// todo: consider making a derivation or something, or merging with rendering shapes
-		const shapes = new Set(this.currentPageShapes.sort(sortByIndex))
+	@computed get sortedShapesArray(): TLShape[] {
+		const shapes = new Set(this.shapesArray.sort(sortByIndex))
 
 		const results: TLShape[] = []
 
@@ -4517,7 +5201,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 
 		shapes.forEach((shape) => {
-			const parent = this.getShape(shape.parentId)
+			const parent = this.getShapeById(shape.parentId)
 			if (!isShape(parent)) {
 				pushShapeWithDescendants(shape)
 			}
@@ -4531,7 +5215,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * const isArrowShape = isShapeOfType<TLArrowShape>(someShape, 'arrow')
+	 * const isArrowShape = isShapeOfType(someShape, ArrowShapeUtil)
 	 * ```
 	 *
 	 * @param util - the TLShapeUtil constructor to test against
@@ -4539,17 +5223,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	isShapeOfType<T extends TLUnknownShape>(shape: TLUnknownShape, type: T['type']): shape is T
 	isShapeOfType<T extends TLUnknownShape>(
-		shapeId: TLUnknownShape['id'],
-		type: T['type']
-	): shapeId is T['id']
-	isShapeOfType<T extends TLUnknownShape>(
-		arg: TLUnknownShape | TLUnknownShape['id'],
-		type: T['type']
-	) {
-		const shape = typeof arg === 'string' ? this.getShape(arg)! : arg
-		return shape.type === type
+		shape: TLUnknownShape,
+		util: { new (...args: any): ShapeUtil<T>; type: string }
+	): shape is T {
+		return shape.type === util.type
 	}
 
 	/**
@@ -4557,15 +5235,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShape('box1')
+	 * editor.getShapeById('box1')
 	 * ```
 	 *
 	 * @param id - The id of the shape to get.
 	 *
 	 * @public
 	 */
-	getShape<T extends TLShape = TLShape>(shape: TLShape | TLParentId): T | undefined {
-		const id = typeof shape === 'string' ? shape : shape.id
+	getShapeById<T extends TLShape = TLShape>(id: TLParentId): T | undefined {
 		if (!isShapeId(id)) return undefined
 		return this.store.get(id) as T
 	}
@@ -4576,17 +5253,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getShapeParent(myShape)
+	 * editor.getParentShape(myShape)
 	 * ```
 	 *
 	 * @public
 	 */
-	getShapeParent(shape?: TLShape | TLShapeId): TLShape | undefined {
-		const id = typeof shape === 'string' ? shape : shape?.id
-		if (!id) return undefined
-		const freshShape = this.getShape(id)
-		if (freshShape === undefined || !isShapeId(freshShape.parentId)) return undefined
-		return this.store.get(freshShape.parentId)
+	getParentShape(shape?: TLShape): TLShape | undefined {
+		if (shape === undefined || !isShapeId(shape.parentId)) return undefined
+		return this.store.get(shape.parentId)
 	}
 
 	/**
@@ -4607,7 +5281,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			return targetShape
 		}
 
-		const ancestor = this.findShapeAncestor(
+		const ancestor = this.findAncestor(
 			targetShape,
 			(ancestor) => ancestor.parentId === siblingShape.parentId
 		)
@@ -4629,23 +5303,19 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	isShapeInPage(shape: TLShape | TLShapeId, pageId = this.currentPageId): boolean {
-		const id = typeof shape === 'string' ? shape : shape.id
-		const shapeToCheck = this.getShape(id)
-		if (!shapeToCheck) return false
-
+	isShapeInPage(shape: TLShape, pageId = this.currentPageId): boolean {
 		let shapeIsInPage = false
 
-		if (shapeToCheck.parentId === pageId) {
+		if (shape.parentId === pageId) {
 			shapeIsInPage = true
 		} else {
-			let parent = this.getShape(shapeToCheck.parentId)
+			let parent = this.getShapeById(shape.parentId)
 			isInPageSearch: while (parent) {
 				if (parent.parentId === pageId) {
 					shapeIsInPage = true
 					break isInPageSearch
 				}
-				parent = this.getShape(parent.parentId)
+				parent = this.getShapeById(parent.parentId)
 			}
 		}
 
@@ -4661,14 +5331,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	getAncestorPageId(shape?: TLShape | TLShapeId): TLPageId | undefined {
-		const id = typeof shape === 'string' ? shape : shape?.id
-		const _shape = id && this.getShape(id)
-		if (!_shape) return undefined
-		if (isPageId(_shape.parentId)) {
-			return _shape.parentId
+	getAncestorPageId(shape?: TLShape): TLPageId | undefined {
+		if (shape === undefined) return undefined
+		if (isPageId(shape.parentId)) {
+			return shape.parentId
 		} else {
-			return this.getAncestorPageId(this.getShape(_shape.parentId))
+			return this.getAncestorPageId(this.getShapeById(shape.parentId))
 		}
 	}
 
@@ -4679,7 +5347,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @internal
 	 */
-	private readonly _parentIdsToChildIds: ReturnType<typeof parentsToChildren>
+	private readonly _parentIdsToChildIds: ReturnType<typeof parentsToChildrenWithIndexes>
 
 	/**
 	 * Reparent shapes to a new parent. This operation preserves the shape's current page positions /
@@ -4687,31 +5355,27 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.reparentShapes([box1, box2], 'frame1')
-	 * editor.reparentShapes([box1.id, box2.id], 'frame1')
-	 * editor.reparentShapes([box1.id, box2.id], 'frame1', 4)
+	 * editor.reparentShapesById(['box1', 'box2'], 'frame1')
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) of the shapes to reparent.
+	 * @param ids - The ids of the shapes to reparent.
 	 * @param parentId - The id of the new parent shape.
-	 * @param insertIndex - (optional) The index to insert the children.
+	 * @param insertIndex - The index to insert the children.
 	 *
 	 * @public
 	 */
-	reparentShapes(shapes: TLShapeId[] | TLShape[], parentId: TLParentId, insertIndex?: string) {
-		const ids =
-			typeof shapes[0] === 'string' ? (shapes as TLShapeId[]) : shapes.map((s) => (s as TLShape).id)
+	reparentShapesById(ids: TLShapeId[], parentId: TLParentId, insertIndex?: string) {
 		const changes: TLShapePartial[] = []
 
 		const parentTransform = isPageId(parentId)
 			? Matrix2d.Identity()
-			: this.getShapePageTransform(parentId)!
+			: this.getPageTransformById(parentId)!
 
-		const parentPageRotation = parentTransform.rotation()
+		const parentPageRotation = parentTransform.decompose().rotation
 
 		let indices: string[] = []
 
-		const sibs = compact(this.getSortedChildIdsForParent(parentId).map((id) => this.getShape(id)))
+		const sibs = compact(this.getSortedChildIds(parentId).map((id) => this.getShapeById(id)))
 
 		if (insertIndex) {
 			const sibWithInsertIndex = sibs.find((s) => s.index === insertIndex)
@@ -4747,21 +5411,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 			indices = sib ? getIndicesAbove(sib.index, ids.length) : getIndices(ids.length)
 		}
 
-		const invertedParentTransform = parentTransform.clone().invert()
-
 		let id: TLShapeId
 		for (let i = 0; i < ids.length; i++) {
 			id = ids[i]
-			const shape = this.getShape(id)
-			if (!shape) continue
-			const pageTransform = this.getShapePageTransform(shape)!
-			if (!pageTransform) continue
-			const pagePoint = pageTransform.point()
+			const shape = this.getShapeById(id)
+			const pagePoint = this.getPagePointById(id)
 
 			if (!shape || !pagePoint) continue
 
-			const newPoint = invertedParentTransform.applyToPoint(pagePoint)
-			const newRotation = pageTransform.rotation() - parentPageRotation
+			const newPoint = Matrix2d.applyToPoint(Matrix2d.Inverse(parentTransform), pagePoint)
+			const newRotation = this.getPageRotation(shape) - parentPageRotation
 
 			changes.push({
 				id: shape.id,
@@ -4787,15 +5446,13 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	getHighestIndexForParent(parent: TLParentId | TLPage | TLShape): string {
-		const parentId = typeof parent === 'string' ? parent : parent.id
+	getHighestIndexForParent(parentId: TLShapeId | TLPageId) {
 		const children = this._parentIdsToChildIds.value[parentId]
 
 		if (!children || children.length === 0) {
 			return 'a1'
 		}
-		const shape = this.getShape(children[children.length - 1])!
-		return getIndexAbove(shape.index)
+		return getIndexAbove(children[children.length - 1][1])
 	}
 
 	/**
@@ -4810,18 +5467,17 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.getSortedChildIdsForParent('frame1')
+	 * editor.getSortedChildIds('frame1')
 	 * ```
 	 *
 	 * @param parentId - The id of the parent shape.
 	 *
 	 * @public
 	 */
-	getSortedChildIdsForParent(parent: TLParentId | TLPage | TLShape): TLShapeId[] {
-		const parentId = typeof parent === 'string' ? parent : parent.id
-		const ids = this._parentIdsToChildIds.value[parentId]
-		if (!ids) return EMPTY_ARRAY
-		return this._childIdsCache.get(ids, () => ids)
+	getSortedChildIds(parentId: TLParentId): TLShapeId[] {
+		const withIndices = this._parentIdsToChildIds.value[parentId]
+		if (!withIndices) return EMPTY_ARRAY
+		return this._childIdsCache.get(withIndices, () => withIndices.map(([id]) => id))
 	}
 
 	/**
@@ -4837,17 +5493,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	visitDescendants(
-		parent: TLParentId | TLPage | TLShape,
-		visitor: (id: TLShapeId) => void | false
-	): this {
-		const parentId = typeof parent === 'string' ? parent : parent.id
-		const children = this.getSortedChildIdsForParent(parentId)
+	visitDescendants(parentId: TLParentId, visitor: (id: TLShapeId) => void | false) {
+		const children = this.getSortedChildIds(parentId)
 		for (const id of children) {
 			if (visitor(id) === false) continue
 			this.visitDescendants(id, visitor)
 		}
-		return this
 	}
 
 	/**
@@ -4869,12 +5520,42 @@ export class Editor extends EventEmitter<TLEventMap> {
 			if (!id) break
 			if (idsToInclude.has(id)) continue
 			idsToInclude.add(id)
-			for (const childId of this.getSortedChildIdsForParent(id)) {
-				idsToCheck.push(childId)
-			}
+			this.getSortedChildIds(id).forEach((id) => {
+				idsToCheck.push(id)
+			})
 		}
 
 		return idsToInclude
+	}
+
+	/**
+	 * Get the id of what should be the parent of a new shape at a given point. The parent can be a page or shape.
+	 *
+	 * @param point - The point to find the parent for.
+	 * @param shapeType - The type of shape that will be created.
+	 *
+	 * @returns The id of the parent.
+	 *
+	 * @public
+	 */
+	getParentIdForNewShapeAtPoint(point: VecLike, shapeType: TLShape['type']) {
+		const shapes = this.sortedShapesArray
+
+		for (let i = shapes.length - 1; i >= 0; i--) {
+			const shape = shapes[i]
+			const util = this.getShapeUtil(shape)
+			if (!util.canReceiveNewChildrenOfType(shape, shapeType)) continue
+			const maskedPageBounds = this.getMaskedPageBoundsById(shape.id)
+			if (
+				maskedPageBounds &&
+				maskedPageBounds.containsPoint(point) &&
+				util.hitTestPoint(shape, this.getPointInShapeSpace(shape, point))
+			) {
+				return shape.id
+			}
+		}
+
+		return this.focusLayerId
 	}
 
 	/**
@@ -4887,30 +5568,26 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	getDroppingOverShape(point: VecLike, droppingShapes: TLShape[] = []) {
-		// starting from the top...
-		return this.currentPageShapesSorted.findLast((shape) => {
-			if (
-				// only allow shapes that can receive children
-				!this.getShapeUtil(shape).canDropShapes(shape, droppingShapes) ||
-				// don't allow dropping a shape on itself or one of it's children
-				droppingShapes.find((s) => s.id === shape.id || this.hasAncestor(shape, s.id))
-			) {
-				return false
-			}
+	getDroppingShape(point: VecLike, droppingShapes: TLShape[] = []) {
+		const shapes = this.sortedShapesArray
 
-			// Only allow dropping into the masked page bounds of the shape, e.g. when a frame is
-			// partially clipped by its own parent frame
-			const maskedPageBounds = this.getShapeMaskedPageBounds(shape.id)
-
+		for (let i = shapes.length - 1; i >= 0; i--) {
+			const shape = shapes[i]
+			// don't allow dropping a shape on itself or one of it's children
+			if (droppingShapes.find((s) => s.id === shape.id || this.hasAncestor(shape, s.id))) continue
+			const util = this.getShapeUtil(shape)
+			if (!util.canDropShapes(shape, droppingShapes)) continue
+			const maskedPageBounds = this.getMaskedPageBoundsById(shape.id)
 			if (
 				maskedPageBounds &&
 				maskedPageBounds.containsPoint(point) &&
-				this.getShapeGeometry(shape).hitTestPoint(this.getPointInShapeSpace(shape, point), 0, true)
+				util.hitTestPoint(shape, this.getPointInShapeSpace(shape, point))
 			) {
-				return true
+				return shape
 			}
-		})
+		}
+
+		return undefined
 	}
 
 	/**
@@ -4925,29 +5602,21 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	getOutermostSelectableShape(
-		shape: TLShape | TLShapeId,
-		filter?: (shape: TLShape) => boolean
-	): TLShape {
-		const id = typeof shape === 'string' ? shape : shape.id
-		const freshShape = this.getShape(id)!
-		let match = freshShape
-		let node = freshShape as TLShape | undefined
-
-		const { focusedGroup } = this
-
+	getOutermostSelectableShape(shape: TLShape, filter?: (shape: TLShape) => boolean): TLShape {
+		let match = shape
+		let node = shape as TLShape | undefined
 		while (node) {
 			if (
-				this.isShapeOfType<TLGroupShape>(node, 'group') &&
-				focusedGroup?.id !== node.id &&
-				!this.hasAncestor(focusedGroup, node.id) &&
+				this.isShapeOfType(node, GroupShapeUtil) &&
+				this.focusLayerId !== node.id &&
+				!this.hasAncestor(this.focusLayerShape, node.id) &&
 				(filter?.(node) ?? true)
 			) {
 				match = node
-			} else if (focusedGroup?.id === node.id) {
+			} else if (this.focusLayerId === node.id) {
 				break
 			}
-			node = this.getShapeParent(node)
+			node = this.getParentShape(node)
 		}
 
 		return match
@@ -4961,19 +5630,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.rotateShapesBy(editor.selectedShapeIds, Math.PI)
-	 * editor.rotateShapesBy(editor.selectedShapeIds, Math.PI / 2)
+	 * editor.rotateShapesBy(editor.selectedIds, Math.PI)
+	 * editor.rotateShapesBy(editor.selectedIds, Math.PI / 2)
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) of the shapes to move.
+	 * @param ids - The ids of the shapes to move.
 	 * @param delta - The delta in radians to apply to the selection rotation.
 	 */
-	rotateShapesBy(shapes: TLShapeId[] | TLShape[], delta: number): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
+	rotateShapesBy(ids: TLShapeId[], delta: number): this {
 		if (ids.length <= 0) return this
 
 		const snapshot = getRotationSnapshot({ editor: this })
@@ -4988,38 +5652,36 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.nudgeShapes(['box1', 'box2'], { x: 8, y: 8 })
-	 * editor.nudgeShapes(editor.selectedShapes, { x: 8, y: 8 }, { squashing: true })
+	 * editor.nudgeShapes(['box1', 'box2'], { x: 0, y: 1 })
+	 * editor.nudgeShapes(['box1', 'box2'], { x: 0, y: 1 }, true)
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to move.
+	 * @param ids - The ids of the shapes to move.
 	 * @param direction - The direction in which to move the shapes.
-	 * @param historyOptions - (optional) The history options for the change.
+	 * @param major - Whether this is a major nudge, e.g. a shift + arrow nudge.
 	 */
-	nudgeShapes(
-		shapes: TLShapeId[] | TLShape[],
-		offset: VecLike,
-		historyOptions?: TLCommandHistoryOptions
-	): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
+	nudgeShapes(ids: TLShapeId[], direction: Vec2dModel, major = false, ephemeral = false): this {
 		if (ids.length <= 0) return this
+
+		const step = this.isGridMode
+			? major
+				? this.gridSize * GRID_INCREMENT
+				: this.gridSize
+			: major
+			? MAJOR_NUDGE_FACTOR
+			: MINOR_NUDGE_FACTOR
+
+		const steppedDelta = Vec2d.Mul(direction, step)
 		const changes: TLShapePartial[] = []
 
 		for (const id of ids) {
-			const shape = this.getShape(id)
+			const shape = this.getShapeById(id)
 
 			if (!shape) {
 				throw Error(`Could not find a shape with the id ${id}.`)
 			}
 
-			const localDelta = Vec2d.Cast(offset)
-			const parentTransform = this.getShapeParentTransform(shape)
-			if (parentTransform) localDelta.rot(-parentTransform.rotation())
-
+			const localDelta = this.getDeltaInParentSpace(shape, steppedDelta)
 			const translateStartChanges = this.getShapeUtil(shape).onTranslateStart?.(shape)
 
 			changes.push(
@@ -5038,10 +5700,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			)
 		}
 
-		this.updateShapes(changes, {
-			squashing: true,
-			...historyOptions,
-		})
+		this.updateShapes(changes, ephemeral)
 
 		return this
 	}
@@ -5051,21 +5710,17 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.duplicateShapes(['box1', 'box2'], { x: 8, y: 8 })
-	 * editor.duplicateShapes(editor.selectedShapes, { x: 8, y: 8 })
+	 * editor.duplicateShapes()
+	 * editor.duplicateShapes(['id1', 'id2'])
+	 * editor.duplicateShapes(['id1', 'id2'], { x: 8, y: 8 })
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to duplicate.
-	 * @param offset - (optional) The offset (in pixels) to apply to the duplicated shapes.
+	 * @param ids - The ids of the shapes to duplicate. Defaults to the ids of the selected shapes.
+	 * @param offset - The offset (in pixels) to apply to the duplicated shapes.
 	 *
 	 * @public
 	 */
-	duplicateShapes(shapes: TLShapeId[] | TLShape[], offset?: VecLike): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
+	duplicateShapes(ids: TLShapeId[] = this.selectedIds, offset?: VecLike): this {
 		if (ids.length <= 0) return this
 
 		const initialIds = new Set(ids)
@@ -5076,7 +5731,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			const id = idsToCheck.pop()
 			if (!id) break
 			idsToCreate.push(id)
-			this.getSortedChildIdsForParent(id).forEach((childId) => idsToCheck.push(childId))
+			this.getSortedChildIds(id).forEach((childId) => idsToCheck.push(childId))
 		}
 
 		idsToCreate.reverse()
@@ -5085,7 +5740,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const shapesToCreate = compact(
 			idsToCreate.map((id) => {
-				const shape = this.getShape(id)
+				const shape = this.getShapeById(id)
 
 				if (!shape) {
 					return null
@@ -5097,17 +5752,19 @@ export class Editor extends EventEmitter<TLEventMap> {
 				let oy = 0
 
 				if (offset && initialIds.has(id)) {
-					const parentTransform = this.getShapeParentTransform(shape)
-					const vec = new Vec2d(offset.x, offset.y).rot(-parentTransform!.rotation())
+					const parentTransform = this.getParentTransform(shape)
+					const vec = new Vec2d(offset.x, offset.y).rot(
+						-Matrix2d.Decompose(parentTransform).rotation
+					)
 					ox = vec.x
 					oy = vec.y
 				}
 
 				const parentId = shape.parentId ?? this.currentPageId
-				const siblings = this.getSortedChildIdsForParent(parentId)
+				const siblings = this.getSortedChildIds(parentId)
 				const currentIndex = siblings.indexOf(shape.id)
 				const siblingAboveId = siblings[currentIndex + 1]
-				const siblingAbove = siblingAboveId ? this.getShape(siblingAboveId) : null
+				const siblingAbove = siblingAboveId ? this.getShapeById(siblingAboveId) : null
 
 				const index = siblingAbove
 					? getIndexBetween(shape.index, siblingAbove.index)
@@ -5116,10 +5773,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 				let newShape: TLShape = deepCopy(shape)
 
 				if (
-					this.isShapeOfType<TLArrowShape>(shape, 'arrow') &&
-					this.isShapeOfType<TLArrowShape>(newShape, 'arrow')
+					this.isShapeOfType(shape, ArrowShapeUtil) &&
+					this.isShapeOfType(newShape, ArrowShapeUtil)
 				) {
-					const info = this.getArrowInfo(shape)
+					const info = this.getShapeUtil(ArrowShapeUtil).getArrowInfo(shape)
 					let newStartShapeId: TLShapeId | undefined = undefined
 					let newEndShapeId: TLShapeId | undefined = undefined
 
@@ -5219,15 +5876,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 			const ids = newShapes.map((s) => s.id)
 
 			this.createShapes(newShapes)
-			this.setSelectedShapes(ids)
+			this.setSelectedIds(ids)
 
 			if (offset !== undefined) {
 				// If we've offset the duplicated shapes, check to see whether their new bounds is entirely
 				// contained in the current viewport. If not, then animate the camera to be centered on the
 				// new shapes.
-				const { viewportPageBounds, selectionPageBounds: selectionPageBounds } = this
-				if (selectionPageBounds && !viewportPageBounds.contains(selectionPageBounds)) {
-					this.centerOnPoint(selectionPageBounds.center, {
+				const { viewportPageBounds, selectedPageBounds } = this
+				if (selectedPageBounds && !viewportPageBounds.contains(selectedPageBounds)) {
+					this.centerOnPoint(selectedPageBounds.center.x, selectedPageBounds.center.y, {
 						duration: ANIMATION_MEDIUM_MS,
 					})
 				}
@@ -5245,19 +5902,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * editor.moveShapesToPage(['box1', 'box2'], 'page1')
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) of the shapes to move.
+	 * @param ids - The ids of the shapes to move.
 	 * @param pageId - The id of the page where the shapes will be moved.
 	 *
 	 * @public
 	 */
-	moveShapesToPage(shapes: TLShapeId[] | TLShape[], pageId: TLPageId): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
+	moveShapesToPage(ids: TLShapeId[], pageId: TLPageId): this {
 		if (ids.length === 0) return this
-		if (this.instanceState.isReadonly) return this
+		if (this.isReadOnly) return this
 
 		const { currentPageId } = this
 
@@ -5265,14 +5917,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 		if (!this.store.has(pageId)) return this
 
 		// Basically copy the shapes
-		const content = this.getContentFromCurrentPage(ids)
+		const content = this.getContent(ids)
 
 		// Just to be sure
 		if (!content) return this
 
 		// If there is no space on pageId, or if the selected shapes
 		// would take the new page above the limit, don't move the shapes
-		if (this.getPageShapeIds(pageId).size + content.shapes.length > MAX_SHAPES_PER_PAGE) {
+		if (this.getShapeIdsInPage(pageId).size + content.shapes.length > MAX_SHAPES_PER_PAGE) {
 			alertMaxShapes(this, pageId)
 			return this
 		}
@@ -5284,24 +5936,23 @@ export class Editor extends EventEmitter<TLEventMap> {
 			this.deleteShapes(ids)
 
 			// Move to the next page
-			this.setCurrentPage(pageId)
+			this.setCurrentPageId(pageId)
 
 			// Put the shape content onto the new page; parents and indices will
 			// be taken care of by the putContent method; make sure to pop any focus
 			// layers so that the content will be put onto the page.
-			this.setFocusedGroup(null)
+			this.setFocusLayer(null)
 			this.selectNone()
-			this.putContentOntoCurrentPage(content, {
-				select: true,
-				preserveIds: true,
-				preservePosition: true,
-			})
+			this.putContent(content, { select: true, preserveIds: true, preservePosition: true })
 
 			// Force the new page's camera to be at the same zoom level as the
 			// "from" page's camera, then center the "to" page's camera on the
 			// pasted shapes
-			this.setCamera({ ...this.camera, z: fromPageZ })
-			this.centerOnPoint(this.selectionRotatedPageBounds!.center)
+			const {
+				center: { x, y },
+			} = this.selectionBounds!
+			this.setCamera(this.camera.x, this.camera.y, fromPageZ)
+			this.centerOnPoint(x, y)
 		})
 
 		return this
@@ -5310,25 +5961,20 @@ export class Editor extends EventEmitter<TLEventMap> {
 	/**
 	 * Toggle the lock state of one or more shapes. If there is a mix of locked and unlocked shapes, all shapes will be locked.
 	 *
-	 * @param shapes - The shapes (or shape ids) to toggle.
+	 * @param ids - The ids of the shapes to toggle. Defaults to selected shapes.
 	 *
 	 * @public
 	 */
-	toggleLock(shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
-		if (this.instanceState.isReadonly || ids.length === 0) return this
+	toggleLock(ids: TLShapeId[] = this.selectedIds): this {
+		if (this.isReadOnly || ids.length === 0) return this
 
 		let allLocked = true,
 			allUnlocked = true
-		const shapesToToggle: TLShape[] = []
+		const shapes: TLShape[] = []
 		for (const id of ids) {
-			const shape = this.getShape(id)
+			const shape = this.getShapeById(id)
 			if (shape) {
-				shapesToToggle.push(shape)
+				shapes.push(shape)
 				if (shape.isLocked) {
 					allUnlocked = false
 				} else {
@@ -5336,23 +5982,190 @@ export class Editor extends EventEmitter<TLEventMap> {
 				}
 			}
 		}
-		this.batch(() => {
-			if (allUnlocked) {
-				this.updateShapes(
-					shapesToToggle.map((shape) => ({ id: shape.id, type: shape.type, isLocked: true }))
-				)
-				this.setSelectedShapes([])
-			} else if (allLocked) {
-				this.updateShapes(
-					shapesToToggle.map((shape) => ({ id: shape.id, type: shape.type, isLocked: false }))
-				)
-			} else {
-				this.updateShapes(
-					shapesToToggle.map((shape) => ({ id: shape.id, type: shape.type, isLocked: true }))
-				)
-			}
-		})
+		if (allUnlocked) {
+			this.updateShapes(shapes.map((shape) => ({ id: shape.id, type: shape.type, isLocked: true })))
+			this.setSelectedIds([])
+		} else if (allLocked) {
+			this.updateShapes(
+				shapes.map((shape) => ({ id: shape.id, type: shape.type, isLocked: false }))
+			)
+		} else {
+			this.updateShapes(shapes.map((shape) => ({ id: shape.id, type: shape.type, isLocked: true })))
+		}
 
+		return this
+	}
+
+	/**
+	 * Reorder shapes.
+	 *
+	 * @param operation - The operation to perform.
+	 * @param ids - The ids to reorder.
+	 *
+	 * @public
+	 */
+	reorderShapes(operation: 'toBack' | 'toFront' | 'forward' | 'backward', ids: TLShapeId[]) {
+		if (this.isReadOnly) return this
+		if (ids.length === 0) return this
+		// this.emit('reorder-shapes', { pageId: this.currentPageId, ids, operation })
+
+		const parents = this.getParentsMappedToChildren(ids)
+
+		const changes: TLShapePartial[] = []
+
+		switch (operation) {
+			case 'toBack': {
+				parents.forEach((movingSet, parentId) => {
+					const siblings = compact(
+						this.getSortedChildIds(parentId).map((id) => this.getShapeById(id))
+					)
+
+					if (movingSet.size === siblings.length) return
+
+					let below: string | undefined
+					let above: string | undefined
+
+					for (const shape of siblings) {
+						if (!movingSet.has(shape)) {
+							above = shape.index
+							break
+						}
+						movingSet.delete(shape)
+						below = shape.index
+					}
+
+					if (movingSet.size === 0) return
+
+					const indices = getIndicesBetween(below, above, movingSet.size)
+
+					Array.from(movingSet.values())
+						.sort(sortByIndex)
+						.forEach((node, i) =>
+							changes.push({ id: node.id as any, type: node.type, index: indices[i] })
+						)
+				})
+
+				break
+			}
+			case 'toFront': {
+				parents.forEach((movingSet, parentId) => {
+					const siblings = compact(
+						this.getSortedChildIds(parentId).map((id) => this.getShapeById(id))
+					)
+					const len = siblings.length
+
+					if (movingSet.size === len) return
+
+					let below: string | undefined
+					let above: string | undefined
+
+					for (let i = len - 1; i > -1; i--) {
+						const shape = siblings[i]
+
+						if (!movingSet.has(shape)) {
+							below = shape.index
+							break
+						}
+
+						movingSet.delete(shape)
+						above = shape.index
+					}
+
+					if (movingSet.size === 0) return
+
+					const indices = getIndicesBetween(below, above, movingSet.size)
+
+					Array.from(movingSet.values())
+						.sort(sortByIndex)
+						.forEach((node, i) =>
+							changes.push({ id: node.id as any, type: node.type, index: indices[i] })
+						)
+				})
+
+				break
+			}
+			case 'forward': {
+				parents.forEach((movingSet, parentId) => {
+					const siblings = compact(
+						this.getSortedChildIds(parentId).map((id) => this.getShapeById(id))
+					)
+					const len = siblings.length
+
+					if (movingSet.size === len) return
+
+					const movingIndices = new Set(Array.from(movingSet).map((n) => siblings.indexOf(n)))
+
+					let selectIndex = -1
+					let isSelecting = false
+					let below: string | undefined
+					let above: string | undefined
+					let count: number
+
+					for (let i = 0; i < len; i++) {
+						const isMoving = movingIndices.has(i)
+
+						if (!isSelecting && isMoving) {
+							isSelecting = true
+							selectIndex = i
+							above = undefined
+						} else if (isSelecting && !isMoving) {
+							isSelecting = false
+							count = i - selectIndex
+							below = siblings[i].index
+							above = siblings[i + 1]?.index
+
+							const indices = getIndicesBetween(below, above, count)
+
+							for (let k = 0; k < count; k++) {
+								const node = siblings[selectIndex + k]
+								changes.push({ id: node.id as any, type: node.type, index: indices[k] })
+							}
+						}
+					}
+				})
+
+				break
+			}
+			case 'backward': {
+				parents.forEach((movingSet, parentId) => {
+					const siblings = compact(
+						this.getSortedChildIds(parentId).map((id) => this.getShapeById(id))
+					)
+					const len = siblings.length
+
+					if (movingSet.size === len) return
+
+					const movingIndices = new Set(Array.from(movingSet).map((n) => siblings.indexOf(n)))
+
+					let selectIndex = -1
+					let isSelecting = false
+					let count: number
+
+					for (let i = len - 1; i > -1; i--) {
+						const isMoving = movingIndices.has(i)
+
+						if (!isSelecting && isMoving) {
+							isSelecting = true
+							selectIndex = i
+						} else if (isSelecting && !isMoving) {
+							isSelecting = false
+							count = selectIndex - i
+
+							const indices = getIndicesBetween(siblings[i - 1]?.index, siblings[i].index, count)
+
+							for (let k = 0; k < count; k++) {
+								const node = siblings[i + k + 1]
+								changes.push({ id: node.id as any, type: node.type, index: indices[k] })
+							}
+						}
+					}
+				})
+
+				break
+			}
+		}
+
+		this.updateShapes(changes)
 		return this
 	}
 
@@ -5361,21 +6174,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
+	 * editor.sendToBack()
 	 * editor.sendToBack(['id1', 'id2'])
-	 * editor.sendToBack(box1, box2)
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to move.
+	 * @param ids - The ids of the shapes to move. Defaults to the ids of the selected shapes.
 	 *
 	 * @public
 	 */
-	sendToBack(shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-		const changes = getReorderingShapesChanges(this, 'toBack', ids as TLShapeId[])
-		if (changes) this.updateShapes(changes)
+	sendToBack(ids = this.pageState.selectedIds) {
+		this.reorderShapes('toBack', ids)
 		return this
 	}
 
@@ -5384,21 +6192,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
+	 * editor.sendBackward()
 	 * editor.sendBackward(['id1', 'id2'])
-	 * editor.sendBackward([box1, box2])
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to move.
+	 * @param ids - The ids of the shapes to move. Defaults to the ids of the selected shapes.
 	 *
 	 * @public
 	 */
-	sendBackward(shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-		const changes = getReorderingShapesChanges(this, 'backward', ids as TLShapeId[])
-		if (changes) this.updateShapes(changes)
+	sendBackward(ids = this.pageState.selectedIds) {
+		this.reorderShapes('backward', ids)
 		return this
 	}
 
@@ -5407,21 +6210,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
+	 * editor.bringForward()
 	 * editor.bringForward(['id1', 'id2'])
-	 * editor.bringForward(box1,  box2)
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to move.
+	 * @param ids - The ids of the shapes to move. Defaults to the ids of the selected shapes.
 	 *
 	 * @public
 	 */
-	bringForward(shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-		const changes = getReorderingShapesChanges(this, 'forward', ids as TLShapeId[])
-		if (changes) this.updateShapes(changes)
+	bringForward(ids = this.pageState.selectedIds) {
+		this.reorderShapes('forward', ids)
 		return this
 	}
 
@@ -5430,21 +6228,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
+	 * editor.bringToFront()
 	 * editor.bringToFront(['id1', 'id2'])
-	 * editor.bringToFront([box1, box2])
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to move.
+	 * @param ids - The ids of the shapes to move. Defaults to the ids of the selected shapes.
 	 *
 	 * @public
 	 */
-	bringToFront(shapes: TLShapeId[] | TLShape[]): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-		const changes = getReorderingShapesChanges(this, 'toFront', ids as TLShapeId[])
-		if (changes) this.updateShapes(changes)
+	bringToFront(ids = this.pageState.selectedIds) {
+		this.reorderShapes('toFront', ids)
 		return this
 	}
 
@@ -5453,32 +6246,27 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.flipShapes([box1, box2], 'horizontal', 32)
-	 * editor.flipShapes(editor.selectedShapeIds, 'horizontal', 32)
+	 * editor.flipShapes('horizontal')
+	 * editor.flipShapes('horizontal', ['box1', 'box2'])
 	 * ```
 	 *
-	 * @param shapes - The ids of the shapes to flip.
 	 * @param operation - Whether to flip horizontally or vertically.
+	 * @param ids - The ids of the shapes to flip. Defaults to selected shapes.
 	 *
 	 * @public
 	 */
-	flipShapes(shapes: TLShapeId[] | TLShape[], operation: 'horizontal' | 'vertical'): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
+	flipShapes(operation: 'horizontal' | 'vertical', ids: TLShapeId[] = this.selectedIds) {
+		if (this.isReadOnly) return this
 
-		if (this.instanceState.isReadonly) return this
+		let shapes = compact(ids.map((id) => this.getShapeById(id)))
 
-		let shapesToFlip = compact(ids.map((id) => this.getShape(id)))
+		if (!shapes.length) return this
 
-		if (!shapesToFlip.length) return this
-
-		shapesToFlip = compact(
-			shapesToFlip
+		shapes = compact(
+			shapes
 				.map((shape) => {
-					if (this.isShapeOfType<TLGroupShape>(shape, 'group')) {
-						return this.getSortedChildIdsForParent(shape.id).map((id) => this.getShape(id))
+					if (this.isShapeOfType(shape, GroupShapeUtil)) {
+						return this.getSortedChildIds(shape.id).map((id) => this.getShapeById(id))
 					}
 
 					return shape
@@ -5486,14 +6274,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 				.flat()
 		)
 
-		const scaleOriginPage = Box2d.Common(
-			compact(shapesToFlip.map((id) => this.getShapePageBounds(id)))
-		).center
+		const scaleOriginPage = Box2d.Common(compact(shapes.map((id) => this.getPageBounds(id)))).center
 
 		this.batch(() => {
-			for (const shape of shapesToFlip) {
-				const bounds = this.getShapeGeometry(shape).bounds
-				const initialPageTransform = this.getShapePageTransform(shape.id)
+			for (const shape of shapes) {
+				const bounds = this.getBounds(shape)
+				const initialPageTransform = this.getPageTransformById(shape.id)
 				if (!initialPageTransform) continue
 				this.resizeShape(
 					shape.id,
@@ -5518,49 +6304,42 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.stackShapes([box1, box2], 'horizontal', 32)
-	 * editor.stackShapes(editor.selectedShapeIds, 'horizontal', 32)
+	 * editor.stackShapes('horizontal')
+	 * editor.stackShapes('horizontal', ['box1', 'box2'])
+	 * editor.stackShapes('horizontal', ['box1', 'box2'], 20)
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to stack.
 	 * @param operation - Whether to stack horizontally or vertically.
-	 * @param gap - The gap to leave between shapes.
+	 * @param ids - The ids of the shapes to stack. Defaults to selected shapes.
+	 * @param gap - A specific gap to use when stacking.
 	 *
 	 * @public
 	 */
 	stackShapes(
-		shapes: TLShapeId[] | TLShape[],
 		operation: 'horizontal' | 'vertical',
-		gap: number
-	): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-		if (this.instanceState.isReadonly) return this
+		ids: TLShapeId[] = this.pageState.selectedIds,
+		gap?: number
+	) {
+		if (this.isReadOnly) return this
 
-		const shapesToStack = compact(
-			ids
-				.map((id) => this.getShape(id)) // always fresh shapes
-				.filter((shape) => {
-					if (!shape) return false
+		const shapes = compact(ids.map((id) => this.getShapeById(id))).filter((shape) => {
+			if (!shape) return false
 
-					if (this.isShapeOfType<TLArrowShape>(shape, 'arrow')) {
-						if (shape.props.start.type === 'binding' || shape.props.end.type === 'binding') {
-							return false
-						}
-					}
+			if (this.isShapeOfType(shape, ArrowShapeUtil)) {
+				if (shape.props.start.type === 'binding' || shape.props.end.type === 'binding') {
+					return false
+				}
+			}
 
-					return true
-				})
-		)
+			return true
+		})
 
-		const len = shapesToStack.length
+		const len = shapes.length
 
-		if ((gap === 0 && len < 3) || len < 2) return this
+		if ((gap === undefined && len < 3) || len < 2) return this
 
 		const pageBounds = Object.fromEntries(
-			shapesToStack.map((shape) => [shape.id, this.getShapePageBounds(shape)!])
+			shapes.map((shape) => [shape.id, this.getPageBounds(shape)!])
 		)
 
 		let val: 'x' | 'y'
@@ -5582,17 +6361,17 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		let shapeGap: number
 
-		if (gap === 0) {
+		if (gap === undefined) {
 			const gaps: { gap: number; count: number }[] = []
 
-			shapesToStack.sort((a, b) => pageBounds[a.id][min] - pageBounds[b.id][min])
+			shapes.sort((a, b) => pageBounds[a.id][min] - pageBounds[b.id][min])
 
 			// Collect all of the gaps between shapes. We want to find
 			// patterns (equal gaps between shapes) and use the most common
 			// one as the gap for all of the shapes.
 			for (let i = 0; i < len - 1; i++) {
-				const shape = shapesToStack[i]
-				const nextShape = shapesToStack[i + 1]
+				const shape = shapes[i]
+				const nextShape = shapes[i + 1]
 
 				const bounds = pageBounds[shape.id]
 				const nextBounds = pageBounds[nextShape.id]
@@ -5628,18 +6407,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const changes: TLShapePartial[] = []
 
-		let v = pageBounds[shapesToStack[0].id][max]
+		let v = pageBounds[shapes[0].id][max]
 
-		shapesToStack.forEach((shape, i) => {
+		shapes.forEach((shape, i) => {
 			if (i === 0) return
 
 			const delta = { x: 0, y: 0 }
 			delta[val] = v + shapeGap - pageBounds[shape.id][val]
 
-			const parent = this.getShapeParent(shape)
-			const localDelta = parent
-				? Vec2d.Rot(delta, -this.getShapePageTransform(parent)!.decompose().rotation)
-				: delta
+			const parent = this.getParentShape(shape)
+			const localDelta = parent ? Vec2d.Rot(delta, -this.getPageRotation(parent)) : delta
 
 			const translateStartChanges = this.getShapeUtil(shape).onTranslateStart?.(shape)
 
@@ -5664,34 +6441,22 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * Pack shapes into a grid centered on their current position. Based on potpack (https://github.com/mapbox/potpack).
-	 *
-	 * @example
-	 * ```ts
-	 * editor.packShapes([box1, box2], 32)
-	 * editor.packShapes(editor.selectedShapeIds, 32)
-	 * ```
-	 *
-	 *
-	 * @param shapes - The shapes (or shape ids) to pack.
-	 * @param gap - The padding to apply to the packed shapes. Defaults to 16.
+	 * Pack shapes into a grid centered on their current position. Based on potpack
+	 * (https://github.com/mapbox/potpack)
+	 * @param ids - The ids of the shapes to pack. Defaults to selected shapes.
+	 * @param padding - The padding to apply to the packed shapes.
 	 */
-	packShapes(shapes: TLShapeId[] | TLShape[], gap: number): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
-		if (this.instanceState.isReadonly) return this
+	packShapes(ids: TLShapeId[] = this.pageState.selectedIds, padding = 16) {
+		if (this.isReadOnly) return this
 		if (ids.length < 2) return this
 
-		const shapesToPack = compact(
+		const shapes = compact(
 			ids
-				.map((id) => this.getShape(id)) // always fresh shapes
+				.map((id) => this.getShapeById(id))
 				.filter((shape) => {
 					if (!shape) return false
 
-					if (this.isShapeOfType<TLArrowShape>(shape, 'arrow')) {
+					if (this.isShapeOfType(shape, ArrowShapeUtil)) {
 						if (shape.props.start.type === 'binding' || shape.props.end.type === 'binding') {
 							return false
 						}
@@ -5707,9 +6472,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 			bounds: Box2d,
 			area = 0
 
-		for (let i = 0; i < shapesToPack.length; i++) {
-			shape = shapesToPack[i]
-			bounds = this.getShapePageBounds(shape)!
+		for (let i = 0; i < shapes.length; i++) {
+			shape = shapes[i]
+			bounds = this.getPageBounds(shape)!
 			shapePageBounds[shape.id] = bounds
 			nextShapePageBounds[shape.id] = bounds.clone()
 			area += bounds.width * bounds.height
@@ -5720,7 +6485,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const maxWidth = commonBounds.width
 
 		// sort the shapes by height, descending
-		shapesToPack.sort((a, b) => shapePageBounds[b.id].height - shapePageBounds[a.id].height)
+		shapes.sort((a, b) => shapePageBounds[b.id].height - shapePageBounds[a.id].height)
 
 		// Start with is (sort of) the square of the area
 		const startWidth = Math.max(Math.ceil(Math.sqrt(area / 0.95)), maxWidth)
@@ -5733,8 +6498,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 		let space: Box2d
 		let last: Box2d
 
-		for (let i = 0; i < shapesToPack.length; i++) {
-			shape = shapesToPack[i]
+		for (let i = 0; i < shapes.length; i++) {
+			shape = shapes[i]
 			bounds = nextShapePageBounds[shape.id]
 
 			// starting at the back (smaller shapes)
@@ -5757,24 +6522,24 @@ export class Editor extends EventEmitter<TLEventMap> {
 					if (i < spaces.length) spaces[i] = last
 				} else if (bounds.height === space.height) {
 					// fit the shape into the space (width)
-					space.x += bounds.width + gap
-					space.width -= bounds.width + gap
+					space.x += bounds.width + padding
+					space.width -= bounds.width + padding
 				} else if (bounds.width === space.width) {
 					// fit the shape into the space (height)
-					space.y += bounds.height + gap
-					space.height -= bounds.height + gap
+					space.y += bounds.height + padding
+					space.height -= bounds.height + padding
 				} else {
 					// split the space into two spaces
 					spaces.push(
 						new Box2d(
-							space.x + (bounds.width + gap),
+							space.x + (bounds.width + padding),
 							space.y,
-							space.width - (bounds.width + gap),
+							space.width - (bounds.width + padding),
 							bounds.height
 						)
 					)
-					space.y += bounds.height + gap
-					space.height -= bounds.height + gap
+					space.y += bounds.height + padding
+					space.height -= bounds.height + padding
 				}
 				break
 			}
@@ -5787,14 +6552,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const changes: TLShapePartial<any>[] = []
 
-		for (let i = 0; i < shapesToPack.length; i++) {
-			shape = shapesToPack[i]
+		for (let i = 0; i < shapes.length; i++) {
+			shape = shapes[i]
 			bounds = shapePageBounds[shape.id]
 			nextBounds = nextShapePageBounds[shape.id]
 
-			const delta = Vec2d.Sub(nextBounds.point, bounds.point).add(centerDelta)
-			const parentTransform = this.getShapeParentTransform(shape)
-			if (parentTransform) delta.rot(-parentTransform.rotation())
+			const delta = this.getDeltaInParentSpace(
+				shape,
+				Vec2d.Sub(nextBounds.point, bounds.point).add(centerDelta)
+			)
 
 			const change: TLShapePartial = {
 				id: shape.id,
@@ -5827,37 +6593,31 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.alignShapes([box1, box2], 'left')
-	 * editor.alignShapes(editor.selectedShapeIds, 'left')
+	 * editor.alignShapes('left')
+	 * editor.alignShapes('left', ['box1', 'box2'])
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to align.
 	 * @param operation - The align operation to apply.
+	 * @param ids - The ids of the shapes to align. Defaults to selected shapes.
 	 *
 	 * @public
 	 */
-
 	alignShapes(
-		shapes: TLShapeId[] | TLShape[],
-		operation: 'left' | 'center-horizontal' | 'right' | 'top' | 'center-vertical' | 'bottom'
-	): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
-		if (this.instanceState.isReadonly) return this
+		operation: 'left' | 'center-horizontal' | 'right' | 'top' | 'center-vertical' | 'bottom',
+		ids: TLShapeId[] = this.pageState.selectedIds
+	) {
+		if (this.isReadOnly) return this
 		if (ids.length < 2) return this
 
-		const shapesToAlign = compact(ids.map((id) => this.getShape(id))) // always fresh shapes
+		const shapes = compact(ids.map((id) => this.getShapeById(id)))
 		const shapePageBounds = Object.fromEntries(
-			shapesToAlign.map((shape) => [shape.id, this.getShapePageBounds(shape)])
+			shapes.map((shape) => [shape.id, this.getPageBounds(shape)])
 		)
 		const commonBounds = Box2d.Common(compact(Object.values(shapePageBounds)))
 
 		const changes: TLShapePartial[] = []
 
-		shapesToAlign.forEach((shape) => {
+		shapes.forEach((shape) => {
 			const pageBounds = shapePageBounds[shape.id]
 			if (!pageBounds) return
 
@@ -5890,10 +6650,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 				}
 			}
 
-			const parent = this.getShapeParent(shape)
-			const localDelta = parent
-				? Vec2d.Rot(delta, -this.getShapePageTransform(parent)!.decompose().rotation)
-				: delta
+			const parent = this.getParentShape(shape)
+			const localDelta = parent ? Vec2d.Rot(delta, -this.getPageRotation(parent)) : delta
 
 			const translateChanges = this.getShapeUtil(shape).onTranslateStart?.(shape)
 
@@ -5922,28 +6680,26 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.distributeShapes([box1, box2], 'horizontal')
-	 * editor.distributeShapes(editor.selectedShapeIds, 'horizontal')
+	 * editor.distributeShapes('left')
+	 * editor.distributeShapes('left', ['box1', 'box2'])
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to distribute.
 	 * @param operation - Whether to distribute shapes horizontally or vertically.
+	 * @param ids - The ids of the shapes to distribute. Defaults to selected shapes.
 	 *
 	 * @public
 	 */
-	distributeShapes(shapes: TLShapeId[] | TLShape[], operation: 'horizontal' | 'vertical'): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
-		if (this.instanceState.isReadonly) return this
+	distributeShapes(
+		operation: 'horizontal' | 'vertical',
+		ids: TLShapeId[] = this.pageState.selectedIds
+	) {
+		if (this.isReadOnly) return this
 		if (ids.length < 3) return this
 
 		const len = ids.length
-		const shapesToDistribute = compact(ids.map((id) => this.getShape(id))) // always fresh shapes
+		const shapes = compact(ids.map((id) => this.getShapeById(id)))
 		const pageBounds = Object.fromEntries(
-			shapesToDistribute.map((shape) => [shape.id, this.getShapePageBounds(shape)!])
+			shapes.map((shape) => [shape.id, this.getPageBounds(shape)!])
 		)
 
 		let val: 'x' | 'y'
@@ -5968,26 +6724,22 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const changes: TLShapePartial[] = []
 
 		// Clustered
-		const first = shapesToDistribute.sort(
-			(a, b) => pageBounds[a.id][min] - pageBounds[b.id][min]
-		)[0]
-		const last = shapesToDistribute.sort((a, b) => pageBounds[b.id][max] - pageBounds[a.id][max])[0]
+		const first = shapes.sort((a, b) => pageBounds[a.id][min] - pageBounds[b.id][min])[0]
+		const last = shapes.sort((a, b) => pageBounds[b.id][max] - pageBounds[a.id][max])[0]
 
 		const midFirst = pageBounds[first.id][mid]
 		const step = (pageBounds[last.id][mid] - midFirst) / (len - 1)
 		const v = midFirst + step
 
-		shapesToDistribute
+		shapes
 			.filter((shape) => shape !== first && shape !== last)
 			.sort((a, b) => pageBounds[a.id][mid] - pageBounds[b.id][mid])
 			.forEach((shape, i) => {
 				const delta = { x: 0, y: 0 }
 				delta[val] = v + step * i - pageBounds[shape.id][dim] / 2 - pageBounds[shape.id][val]
 
-				const parent = this.getShapeParent(shape)
-				const localDelta = parent
-					? Vec2d.Rot(delta, -this.getShapePageTransform(parent)!.rotation())
-					: delta
+				const parent = this.getParentShape(shape)
+				const localDelta = parent ? Vec2d.Rot(delta, -this.getPageRotation(parent)) : delta
 				const translateStartChanges = this.getShapeUtil(shape).onTranslateStart?.(shape)
 
 				changes.push(
@@ -6013,43 +6765,45 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
-	 * editor.stretchShapes([box1, box2], 'horizontal')
-	 * editor.stretchShapes(editor.selectedShapeIds, 'horizontal')
+	 * editor.stretchShapes('horizontal')
+	 * editor.stretchShapes('horizontal', ['box1', 'box2'])
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape ids) to stretch.
 	 * @param operation - Whether to stretch shapes horizontally or vertically.
+	 * @param ids - The ids of the shapes to stretch. Defaults to selected shapes.
 	 *
 	 * @public
 	 */
-	stretchShapes(shapes: TLShapeId[] | TLShape[], operation: 'horizontal' | 'vertical'): this {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
-		if (this.instanceState.isReadonly) return this
+	stretchShapes(
+		operation: 'horizontal' | 'vertical',
+		ids: TLShapeId[] = this.pageState.selectedIds
+	) {
+		if (this.isReadOnly) return this
 		if (ids.length < 2) return this
 
-		const shapesToStretch = compact(ids.map((id) => this.getShape(id))) // always fresh shapes
-		const shapeBounds = Object.fromEntries(ids.map((id) => [id, this.getShapeGeometry(id).bounds]))
-		const shapePageBounds = Object.fromEntries(ids.map((id) => [id, this.getShapePageBounds(id)!]))
+		const shapes = compact(ids.map((id) => this.getShapeById(id)))
+		const shapeBounds = Object.fromEntries(shapes.map((shape) => [shape.id, this.getBounds(shape)]))
+		const shapePageBounds = Object.fromEntries(
+			shapes.map((shape) => [shape.id, this.getPageBounds(shape)!])
+		)
 		const commonBounds = Box2d.Common(compact(Object.values(shapePageBounds)))
+
+		const changes: TLShapePartial[] = []
 
 		switch (operation) {
 			case 'vertical': {
 				this.batch(() => {
-					for (const shape of shapesToStretch) {
-						const pageRotation = this.getShapePageTransform(shape)!.rotation()
+					for (const shape of shapes) {
+						const pageRotation = this.getPageRotation(shape)
 						if (pageRotation % PI2) continue
 						const bounds = shapeBounds[shape.id]
 						const pageBounds = shapePageBounds[shape.id]
-						const localOffset = new Vec2d(0, commonBounds.minY - pageBounds.minY)
-						const parentTransform = this.getShapeParentTransform(shape)
-						if (parentTransform) localOffset.rot(-parentTransform.rotation())
-
+						const localOffset = this.getDeltaInParentSpace(
+							shape,
+							new Vec2d(0, commonBounds.minY - pageBounds.minY)
+						)
 						const { x, y } = Vec2d.Add(localOffset, shape)
-						this.updateShapes([{ id: shape.id, type: shape.type, x, y }], { squashing: true })
+						this.updateShapes([{ id: shape.id, type: shape.type, x, y }], true)
 						const scale = new Vec2d(1, commonBounds.height / pageBounds.height)
 						this.resizeShape(shape.id, scale, {
 							initialBounds: bounds,
@@ -6062,17 +6816,17 @@ export class Editor extends EventEmitter<TLEventMap> {
 			}
 			case 'horizontal': {
 				this.batch(() => {
-					for (const shape of shapesToStretch) {
+					for (const shape of shapes) {
 						const bounds = shapeBounds[shape.id]
 						const pageBounds = shapePageBounds[shape.id]
-						const pageRotation = this.getShapePageTransform(shape)!.rotation()
+						const pageRotation = this.getPageRotation(shape)
 						if (pageRotation % PI2) continue
-						const localOffset = new Vec2d(commonBounds.minX - pageBounds.minX, 0)
-						const parentTransform = this.getShapeParentTransform(shape)
-						if (parentTransform) localOffset.rot(-parentTransform.rotation())
-
+						const localOffset = this.getDeltaInParentSpace(
+							shape,
+							new Vec2d(commonBounds.minX - pageBounds.minX, 0)
+						)
 						const { x, y } = Vec2d.Add(localOffset, shape)
-						this.updateShapes([{ id: shape.id, type: shape.type, x, y }], { squashing: true })
+						this.updateShapes([{ id: shape.id, type: shape.type, x, y }], true)
 						const scale = new Vec2d(commonBounds.width / pageBounds.width, 1)
 						this.resizeShape(shape.id, scale, {
 							initialBounds: bounds,
@@ -6086,6 +6840,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 			}
 		}
 
+		this.updateShapes(changes)
 		return this
 	}
 
@@ -6099,34 +6854,39 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	resizeShape(
-		shape: TLShapeId | TLShape,
+		id: TLShapeId,
 		scale: VecLike,
-		options: TLResizeShapeOptions = {}
-	): this {
-		const id = typeof shape === 'string' ? shape : shape.id
-		if (this.instanceState.isReadonly) return this
+		options: {
+			initialBounds?: Box2d
+			scaleOrigin?: VecLike
+			scaleAxisRotation?: number
+			initialShape?: TLShape
+			initialPageTransform?: MatLike
+			dragHandle?: TLResizeHandle
+			mode?: TLResizeMode
+		} = {}
+	) {
+		if (this.isReadOnly) return this
 
 		if (!Number.isFinite(scale.x)) scale = new Vec2d(1, scale.y)
 		if (!Number.isFinite(scale.y)) scale = new Vec2d(scale.x, 1)
 
-		const initialShape = options.initialShape ?? this.getShape(id)
+		const initialShape = options.initialShape ?? this.getShapeById(id)
 		if (!initialShape) return this
 
-		const scaleOrigin = options.scaleOrigin ?? this.getShapePageBounds(id)?.center
+		const scaleOrigin = options.scaleOrigin ?? this.getPageBoundsById(id)?.center
 		if (!scaleOrigin) return this
 
-		const pageTransform = options.initialPageTransform
-			? Matrix2d.Cast(options.initialPageTransform)
-			: this.getShapePageTransform(id)
-		if (!pageTransform) return this
-
-		const pageRotation = pageTransform.rotation()
+		const pageRotation = this.getPageRotationById(id)
 
 		if (pageRotation == null) return this
 
 		const scaleAxisRotation = options.scaleAxisRotation ?? pageRotation
 
-		const initialBounds = options.initialBounds ?? this.getShapeGeometry(id).bounds
+		const pageTransform = options.initialPageTransform ?? this.getPageTransformById(id)
+		if (!pageTransform) return this
+
+		const initialBounds = options.initialBounds ?? this.getBoundsById(id)
 
 		if (!initialBounds) return this
 
@@ -6207,7 +6967,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 						),
 					},
 				],
-				{ squashing: true }
+				true
 			)
 		} else {
 			const initialPageCenter = Matrix2d.applyToPoint(pageTransform, initialBounds.center)
@@ -6236,32 +6996,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 						y: initialShape.y + delta.y,
 					},
 				],
-				{ squashing: true }
+				true
 			)
 		}
 
 		return this
-	}
-
-	/** @internal */
-	private _scalePagePoint(
-		point: VecLike,
-		scaleOrigin: VecLike,
-		scale: VecLike,
-		scaleAxisRotation: number
-	) {
-		const relativePoint = Vec2d.RotWith(point, scaleOrigin, -scaleAxisRotation).sub(scaleOrigin)
-
-		// calculate the new point position relative to the scale origin
-		const newRelativePagePoint = Vec2d.MulV(relativePoint, scale)
-
-		// and rotate it back to page coords to get the new page point of the resized shape
-		const destination = Vec2d.Add(newRelativePagePoint, scaleOrigin).rotWith(
-			scaleOrigin,
-			scaleAxisRotation
-		)
-
-		return destination
 	}
 
 	/** @internal */
@@ -6303,11 +7042,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 		if (Math.sign(scale.x) * Math.sign(scale.y) < 0) {
 			let { rotation } = Matrix2d.Decompose(options.initialPageTransform)
 			rotation -= 2 * rotation
-			this.updateShapes([{ id, type, rotation }], { squashing: true })
+			this.updateShapes([{ id, type, rotation }], true)
 		}
 
 		// Next we need to translate the shape so that it's center point ends up in the right place.
-		// To do that we first need to calculate the center point of the shape in the current page space before the scale was applied.
+		// To do that we first need to calculate the center point of the shape in page space before the scale was applied.
 		const preScaleShapePageCenter = Matrix2d.applyToPoint(
 			options.initialPageTransform,
 			options.initialBounds.center
@@ -6322,20 +7061,39 @@ export class Editor extends EventEmitter<TLEventMap> {
 		)
 
 		// now calculate how far away the shape is from where it needs to be
-		const pageBounds = this.getShapePageBounds(id)!
-		const pageTransform = this.getShapePageTransform(id)!
-		const currentPageCenter = pageBounds.center
-		const shapePageTransformOrigin = pageTransform.point()
-		if (!currentPageCenter || !shapePageTransformOrigin) return this
+		const currentPageCenter = this.getPageCenterById(id)
+		const currentPagePoint = this.getPagePointById(id)
+		if (!currentPageCenter || !currentPagePoint) return this
 		const pageDelta = Vec2d.Sub(postScaleShapePageCenter, currentPageCenter)
 
 		// and finally figure out what the shape's new position should be
-		const postScaleShapePagePoint = Vec2d.Add(shapePageTransformOrigin, pageDelta)
+		const postScaleShapePagePoint = Vec2d.Add(currentPagePoint, pageDelta)
 		const { x, y } = this.getPointInParentSpace(id, postScaleShapePagePoint)
 
-		this.updateShapes([{ id, type, x, y }], { squashing: true })
+		this.updateShapes([{ id, type, x, y }], true)
 
 		return this
+	}
+
+	/** @internal */
+	private _scalePagePoint(
+		point: VecLike,
+		scaleOrigin: VecLike,
+		scale: VecLike,
+		scaleAxisRotation: number
+	) {
+		const relativePoint = Vec2d.RotWith(point, scaleOrigin, -scaleAxisRotation).sub(scaleOrigin)
+
+		// calculate the new point position relative to the scale origin
+		const newRelativePagePoint = Vec2d.MulV(relativePoint, scale)
+
+		// and rotate it back to page coords to get the new page point of the resized shape
+		const destination = Vec2d.Add(newRelativePagePoint, scaleOrigin).rotWith(
+			scaleOrigin,
+			scaleAxisRotation
+		)
+
+		return destination
 	}
 
 	/**
@@ -6359,134 +7117,97 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * Create a single shape.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.createShape(myShape)
-	 * editor.createShape({ id: 'box1', type: 'text', props: { text: "ok" } })
-	 * ```
-	 *
-	 * @param shape - The shape (or shape partial) to create.
-	 *
-	 * @public
-	 */
-	createShape<T extends TLUnknownShape>(shape: OptionalKeys<TLShapePartial<T>, 'id'>): this {
-		this._createShapes([shape])
-		return this
-	}
-
-	/**
 	 * Create shapes.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.createShapes([myShape])
 	 * editor.createShapes([{ id: 'box1', type: 'text', props: { text: "ok" } }])
 	 * ```
 	 *
-	 * @param shapes - The shapes (or shape partials) to create.
+	 * @param partials - The shape partials to create.
 	 * @param select - Whether to select the created shapes. Defaults to false.
 	 *
 	 * @public
 	 */
-	createShapes<T extends TLUnknownShape>(shapes: OptionalKeys<TLShapePartial<T>, 'id'>[]) {
-		if (!Array.isArray(shapes)) {
-			throw Error('Editor.createShapes: must provide an array of shapes or shape partials')
-		}
-		this._createShapes(shapes)
+	createShapes<T extends TLUnknownShape>(partials: TLShapePartial<T>[], select = false) {
+		this._createShapes(partials, select)
 		return this
 	}
 
 	/** @internal */
 	private _createShapes = this.history.createCommand(
 		'createShapes',
-		(partials: OptionalKeys<TLShapePartial, 'id'>[]) => {
-			if (this.instanceState.isReadonly) return null
+		(partials: TLShapePartial[], select = false) => {
+			if (this.isReadOnly) return null
 			if (partials.length <= 0) return null
 
-			const { currentPageShapeIds } = this
+			const { currentPageShapeIds: shapeIds, selectedIds } = this
 
-			const maxShapesReached = partials.length + currentPageShapeIds.size > MAX_SHAPES_PER_PAGE
+			const prevSelectedIds = select ? selectedIds : undefined
+
+			const maxShapesReached = partials.length + shapeIds.size > MAX_SHAPES_PER_PAGE
 
 			if (maxShapesReached) {
-				// can't create more shapes than fit on the page
 				alertMaxShapes(this)
-				return
 			}
 
-			if (partials.length === 0) return null
+			const partialsToCreate = maxShapesReached
+				? partials.slice(0, MAX_SHAPES_PER_PAGE - shapeIds.size)
+				: partials
+
+			if (partialsToCreate.length === 0) return null
 
 			return {
 				data: {
 					currentPageId: this.currentPageId,
-					partials: partials.map((p) =>
-						p.id ? p : { ...p, id: createShapeId() }
-					) as TLShapePartial[],
+					createdIds: partials.map((p) => p.id),
+					prevSelectedIds,
+					partials: partialsToCreate,
+					select,
 				},
 			}
 		},
 		{
-			do: ({ partials }) => {
-				const { focusedGroupId } = this
+			do: ({ createdIds, partials, select }) => {
+				const { focusLayerId } = this
 
 				// 1. Parents
 
 				// Make sure that each partial will become the child of either the
 				// page or another shape that exists (or that will exist) in this page.
 
-				const { currentPageShapesSorted: sortedShapesOnCurrentPage } = this
 				partials = partials.map((partial) => {
-					// If the partial does not provide the parentId OR if the provided
-					// parentId is NOT in the store AND NOT among the other shapes being
-					// created, then we need to find a parent for the shape. This can be
-					// another shape that exists under that point and which can receive
-					// children of the creating shape's type, or else the page itself.
 					if (
+						// No parentId provided
 						!partial.parentId ||
-						!(this.store.has(partial.parentId) || partials.some((p) => p.id === partial.parentId))
+						// A parentId is proved but the parent is neither a) in the store
+						// or b) among the other creating shape partials
+						(!this.store.get(partial.parentId) && !partials.find((p) => p.id === partial.parentId))
 					) {
 						partial = { ...partial }
-
-						const parentId =
-							sortedShapesOnCurrentPage.findLast(
-								(parent) =>
-									// parent.type === 'frame'
-									this.getShapeUtil(parent).canReceiveNewChildrenOfType(parent, partial.type) &&
-									this.isPointInShape(
-										parent,
-										// If no parent is provided, then we can treat the
-										// shape's provided x/y as being in the page's space.
-										{ x: partial.x ?? 0, y: partial.y ?? 0 },
-										{
-											margin: 0,
-											hitInside: true,
-										}
-									)
-							)?.id ?? this.focusedGroupId
-
+						const parentId = this.getParentIdForNewShapeAtPoint(
+							{ x: partial.x ?? 0, y: partial.y ?? 0 },
+							partial.type
+						)
 						partial.parentId = parentId
-
 						// If the parent is a shape (rather than a page) then insert the
 						// shapes into the shape's children. Adjust the point and page rotation to be
 						// preserved relative to the parent.
 						if (isShapeId(parentId)) {
-							const point = this.getPointInShapeSpace(this.getShape(parentId)!, {
+							const point = this.getPointInShapeSpace(this.getShapeById(parentId)!, {
 								x: partial.x ?? 0,
 								y: partial.y ?? 0,
 							})
 							partial.x = point.x
 							partial.y = point.y
-							partial.rotation =
-								-this.getShapePageTransform(parentId)!.rotation() + (partial.rotation ?? 0)
+							partial.rotation = -this.getPageRotationById(parentId) + (partial.rotation ?? 0)
 						}
-
 						// a shape cannot be it's own parent. This was a rare issue with frames/groups in the syncFuzz tests.
 						if (partial.parentId === partial.id) {
-							partial.parentId = focusedGroupId
+							partial.parentId = focusLayerId
 						}
+						return partial
 					}
-
 					return partial
 				})
 
@@ -6509,13 +7230,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 					let index = partial.index
 
 					if (!index) {
-						// Hello bug-seeker: have you just created a frame and then a shape
-						// and found that the shape is automatically the child of the frame?
-						// this is the reason why! It would be harder to have each shape specify
-						// the frame as the parent when creating a shape inside of a frame, so
-						// we do it here.
-						const parentId = partial.parentId ?? focusedGroupId
-
+						const parentId = partial.parentId ?? focusLayerId
 						if (!parentIndices.has(parentId)) {
 							parentIndices.set(parentId, this.getHighestIndexForParent(parentId))
 						}
@@ -6528,7 +7243,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 					// We then look up each key in the tab state's styles; and if it's there,
 					// we use the value from the tab state's styles instead of the default.
-					for (const [style, propKey] of this.styleProps[partial.type]) {
+					for (const [style, propKey] of util.styleProps) {
 						;(initialProps as any)[propKey] = this.getStyleForNextShape(style)
 					}
 
@@ -6543,7 +7258,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 						...partial,
 						index,
 						opacity: partial.opacity ?? this.instanceState.opacityForNextShape,
-						parentId: partial.parentId ?? focusedGroupId,
+						parentId: partial.parentId ?? focusLayerId,
 						props: 'props' in partial ? { ...initialProps, ...partial.props } : initialProps,
 					})
 
@@ -6562,16 +7277,30 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 				// Add meta properties, if any, to the shapes
 				shapeRecordsToCreate.forEach((shape) => {
-					shape.meta = {
-						...this.getInitialMetaForShape(shape),
-						...shape.meta,
-					}
+					shape.meta = this.getInitialMetaForShape(shape)
 				})
 
 				this.store.put(shapeRecordsToCreate)
+
+				// If we're also selecting the newly created shapes, attempt to select all of them;
+
+				// the engine will filter out any shapes that are descendants of other new shapes.
+				if (select) {
+					this.store.update(this.pageState.id, (state) => ({
+						...state,
+						selectedIds: createdIds,
+					}))
+				}
 			},
-			undo: ({ partials }) => {
-				this.store.remove(partials.map((p) => p.id))
+			undo: ({ createdIds, prevSelectedIds }) => {
+				this.store.remove(createdIds)
+
+				if (prevSelectedIds) {
+					this.store.update(this.pageState.id, (state) => ({
+						...state,
+						selectedIds: prevSelectedIds,
+					}))
+				}
 			},
 		}
 	)
@@ -6579,45 +7308,27 @@ export class Editor extends EventEmitter<TLEventMap> {
 	private animatingShapes = new Map<TLShapeId, string>()
 
 	/**
-	 * Animate a shape.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.animateShape({ id: 'box1', type: 'box', x: 100, y: 100 })
-	 * editor.animateShape({ id: 'box1', type: 'box', x: 100, y: 100 }, { duration: 100, ease: t => t*t })
-	 * ```
-	 *
-	 * @param partial - The shape partial to update.
-	 * @param options - (optional) The animation's options.
-	 *
-	 * @public
-	 */
-	animateShape(
-		partial: TLShapePartial | null | undefined,
-		animationOptions?: TLAnimationOptions
-	): this {
-		return this.animateShapes([partial], animationOptions)
-	}
-
-	/**
 	 * Animate shapes.
 	 *
 	 * @example
 	 * ```ts
 	 * editor.animateShapes([{ id: 'box1', type: 'box', x: 100, y: 100 }])
-	 * editor.animateShapes([{ id: 'box1', type: 'box', x: 100, y: 100 }], { duration: 100, ease: t => t*t })
 	 * ```
 	 *
 	 * @param partials - The shape partials to update.
-	 * @param options - (optional) The animation's options.
 	 *
 	 * @public
 	 */
 	animateShapes(
 		partials: (TLShapePartial | null | undefined)[],
-		animationOptions = {} as TLAnimationOptions
-	): this {
-		const { duration = 500, easing = EASINGS.linear } = animationOptions
+		options: {
+			/** The animation's duration in milliseconds. */
+			duration?: number
+			/** The animation's easing function. */
+			ease?: (t: number) => number
+		} = {}
+	) {
+		const { duration = 500, ease = EASINGS.linear } = options
 
 		const animationId = uniqueId()
 
@@ -6637,7 +7348,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				values: [],
 			}
 
-			const shape = this.getShape(partial.id)!
+			const shape = this.getShapeById(partial.id)!
 
 			if (!shape) return
 
@@ -6662,7 +7373,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 					(p) => p && animatingShapes.get(p.id) === animationId
 				)
 				if (partialsToUpdate.length) {
-					this.updateShapes(partialsToUpdate, { squashing: false })
+					this.updateShapes(partialsToUpdate, false)
 					// update shapes also removes the shape from animating shapes
 				}
 
@@ -6670,7 +7381,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				return
 			}
 
-			t = easing(1 - remaining / duration)
+			t = ease(1 - remaining / duration)
 
 			const { animatingShapes } = this
 
@@ -6692,7 +7403,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 					}
 				}
 
-				this._updateShapes(tPartials, { squashing: true })
+				this._updateShapes(tPartials, true)
 			} catch (e) {
 				// noop
 			}
@@ -6704,33 +7415,25 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * Create a group containing the provided shapes.
+	 * Group some shapes together.
 	 *
-	 * @param shapes - The shapes (or shape ids) to group. Defaults to the selected shapes.
-	 * @param groupId - (optional) The id of the group to create.
+	 * @param ids - Ids of the shapes to group. Defaults to the selected shapes.
+	 * @param groupId - Id of the group to create. Defaults to a new shape id.
 	 *
 	 * @public
 	 */
-	groupShapes(shapes: TLShapeId[] | TLShape[], groupId = createShapeId()): this {
-		if (!Array.isArray(shapes)) {
-			throw Error('Editor.groupShapes: must provide an array of shapes or shape ids')
-		}
-		if (this.instanceState.isReadonly) return this
-
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes.map((s) => (s as TLShape).id) as TLShapeId[])
+	groupShapes(ids: TLShapeId[] = this.selectedIds, groupId = createShapeId()) {
+		if (this.isReadOnly) return this
 
 		if (ids.length <= 1) return this
 
-		const shapesToGroup = compact(this._getUnlockedShapeIds(ids).map((id) => this.getShape(id)))
-		const sortedShapeIds = shapesToGroup.sort(sortByIndex).map((s) => s.id)
-		const pageBounds = Box2d.Common(compact(shapesToGroup.map((id) => this.getShapePageBounds(id))))
+		const shapes = compact(this._getUnlockedShapeIds(ids).map((id) => this.getShapeById(id)))
+		const sortedShapeIds = shapes.sort(sortByIndex).map((s) => s.id)
+		const pageBounds = Box2d.Common(compact(shapes.map((id) => this.getPageBounds(id))))
 
 		const { x, y } = pageBounds.point
 
-		const parentId = this.findCommonAncestor(shapesToGroup) ?? this.currentPageId
+		const parentId = this.findCommonAncestor(shapes) ?? this.currentPageId
 
 		// Only group when the select tool is active
 		if (this.currentToolId !== 'select') return this
@@ -6741,7 +7444,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 
 		// Find all the shapes that have the same parentId, and use the highest index.
-		const shapesWithRootParent = shapesToGroup
+		const shapesWithRootParent = shapes
 			.filter((shape) => shape.parentId === parentId)
 			.sort(sortByIndex)
 
@@ -6760,7 +7463,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 					props: {},
 				},
 			])
-			this.reparentShapes(sortedShapeIds, groupId)
+			this.reparentShapesById(sortedShapeIds, groupId)
 			this.select(groupId)
 		})
 
@@ -6774,12 +7477,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	ungroupShapes(ids: TLShapeId[]): this
-	ungroupShapes(ids: TLShape[]): this
-	ungroupShapes(_ids: TLShapeId[] | TLShape[]) {
-		const ids =
-			typeof _ids[0] === 'string' ? (_ids as TLShapeId[]) : (_ids as TLShape[]).map((s) => s.id)
-		if (this.instanceState.isReadonly) return this
+	ungroupShapes(ids: TLShapeId[] = this.selectedIds) {
+		if (this.isReadOnly) return this
 		if (ids.length === 0) return this
 
 		// Only ungroup when the select tool is active
@@ -6796,12 +7495,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const idsToSelect = new Set<TLShapeId>()
 
 		// Get all groups in the selection
-		const shapes = compact(ids.map((id) => this.getShape(id)))
+		const shapes = compact(ids.map((id) => this.getShapeById(id)))
 
 		const groups: TLGroupShape[] = []
 
 		shapes.forEach((shape) => {
-			if (this.isShapeOfType<TLGroupShape>(shape, 'group')) {
+			if (this.isShapeOfType(shape, GroupShapeUtil)) {
 				groups.push(shape)
 			} else {
 				idsToSelect.add(shape.id)
@@ -6815,40 +7514,19 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 			for (let i = 0, n = groups.length; i < n; i++) {
 				group = groups[i]
-				const childIds = this.getSortedChildIdsForParent(group.id)
+				const childIds = this.getSortedChildIds(group.id)
 
 				for (let j = 0, n = childIds.length; j < n; j++) {
 					idsToSelect.add(childIds[j])
 				}
 
-				this.reparentShapes(childIds, group.parentId, group.index)
+				this.reparentShapesById(childIds, group.parentId, group.index)
 			}
 
 			this.deleteShapes(groups.map((group) => group.id))
 			this.select(...idsToSelect)
 		})
 
-		return this
-	}
-
-	/**
-	 * Update a shape using a partial of the shape.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.updateShape({ id: 'box1', type: 'geo', props: { w: 100, h: 100 } })
-	 * ```
-	 *
-	 * @param partial - The shape partial to update.
-	 * @param historyOptions - (optional) The history options for the change.
-	 *
-	 * @public
-	 */
-	updateShape<T extends TLUnknownShape>(
-		partial: TLShapePartial<T> | null | undefined,
-		historyOptions?: TLCommandHistoryOptions
-	) {
-		this.updateShapes([partial], historyOptions)
 		return this
 	}
 
@@ -6861,13 +7539,13 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * ```
 	 *
 	 * @param partials - The shape partials to update.
-	 * @param historyOptions - (optional) The history options for the change.
+	 * @param squashing - Whether the change is ephemeral.
 	 *
 	 * @public
 	 */
 	updateShapes<T extends TLUnknownShape>(
 		partials: (TLShapePartial<T> | null | undefined)[],
-		historyOptions?: TLCommandHistoryOptions
+		squashing = false
 	) {
 		let compactedPartials = compact(partials)
 		if (this.animatingShapes.size > 0) {
@@ -6875,7 +7553,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 
 		compactedPartials = compactedPartials.filter((p) => {
-			const shape = this.getShape(p.id)
+			const shape = this.getShapeById(p.id)
 			if (!shape) return false
 
 			// Only allow changes to unlocked shapes or changes to the isLocked property (otherwise we cannot unlock a shape)
@@ -6883,23 +7561,20 @@ export class Editor extends EventEmitter<TLEventMap> {
 			return true
 		})
 
-		this._updateShapes(compactedPartials, historyOptions)
+		this._updateShapes(compactedPartials, squashing)
 		return this
 	}
 
 	/** @internal */
 	private _updateShapes = this.history.createCommand(
 		'updateShapes',
-		(
-			_partials: (TLShapePartial | null | undefined)[],
-			historyOptions?: TLCommandHistoryOptions
-		) => {
-			if (this.instanceState.isReadonly) return null
+		(_partials: (TLShapePartial | null | undefined)[], squashing = false) => {
+			if (this.isReadOnly) return null
 
 			const partials = compact(_partials)
 
 			const snapshots = Object.fromEntries(
-				compact(partials.map(({ id }) => this.getShape(id))).map((shape) => {
+				compact(partials.map(({ id }) => this.getShapeById(id))).map((shape) => {
 					return [shape.id, shape]
 				})
 			)
@@ -6956,7 +7631,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 			const updates = Object.fromEntries(updated.map((shape) => [shape.id, shape]))
 
-			return { data: { snapshots, updates }, ...historyOptions }
+			return { data: { snapshots, updates }, squashing }
 		},
 		{
 			do: ({ updates }) => {
@@ -6992,7 +7667,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 	/** @internal */
 	private _getUnlockedShapeIds(ids: TLShapeId[]): TLShapeId[] {
-		return ids.filter((id) => !this.getShape(id)?.isLocked)
+		return ids.filter((id) => !this.getShapeById(id)?.isLocked)
 	}
 
 	/**
@@ -7000,43 +7675,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @example
 	 * ```ts
+	 * editor.deleteShapes()
 	 * editor.deleteShapes(['box1', 'box2'])
 	 * ```
 	 *
-	 * @param ids - The ids of the shapes to delete.
+	 * @param ids - The ids of the shapes to delete. Defaults to the selected shapes.
 	 *
 	 * @public
 	 */
-	deleteShapes(ids: TLShapeId[]): this
-	deleteShapes(shapes: TLShape[]): this
-	deleteShapes(_ids: TLShapeId[] | TLShape[]) {
-		if (!Array.isArray(_ids)) {
-			throw Error('Editor.deleteShapes: must provide an array of shapes or shapeIds')
-		}
-		this._deleteShapes(
-			this._getUnlockedShapeIds(
-				typeof _ids[0] === 'string' ? (_ids as TLShapeId[]) : (_ids as TLShape[]).map((s) => s.id)
-			)
-		)
-		return this
-	}
-
-	/**
-	 * Delete a shape.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.deleteShapes(['box1', 'box2'])
-	 * ```
-	 *
-	 * @param id - The id of the shape to delete.
-	 *
-	 * @public
-	 */
-	deleteShape(id: TLShapeId): this
-	deleteShape(shape: TLShape): this
-	deleteShape(_id: TLShapeId | TLShape) {
-		this.deleteShapes([typeof _id === 'string' ? _id : _id.id])
+	deleteShapes(ids: TLShapeId[] = this.selectedIds) {
+		this._deleteShapes(this._getUnlockedShapeIds(ids))
 		return this
 	}
 
@@ -7044,9 +7692,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 	private _deleteShapes = this.history.createCommand(
 		'delete_shapes',
 		(ids: TLShapeId[]) => {
-			if (this.instanceState.isReadonly) return null
+			if (this.isReadOnly) return null
 			if (ids.length === 0) return null
-			const prevSelectedShapeIds = [...this.currentPageState.selectedShapeIds]
+			const prevSelectedIds = [...this.pageState.selectedIds]
 
 			const allIds = new Set(ids)
 
@@ -7060,34 +7708,34 @@ export class Editor extends EventEmitter<TLEventMap> {
 			const arrowBindings = this._arrowBindingsIndex.value
 			const snapshots = compact(
 				deletedIds.flatMap((id) => {
-					const shape = this.getShape(id)
+					const shape = this.getShapeById(id)
 
 					// Add any bound arrows to the snapshots, so that we can restore the bindings on undo
 					const bindings = arrowBindings[id]
 					if (bindings && bindings.length > 0) {
-						return bindings.map(({ arrowId }) => this.getShape(arrowId)).concat(shape)
+						return bindings.map(({ arrowId }) => this.getShapeById(arrowId)).concat(shape)
 					}
 					return shape
 				})
 			)
 
-			const postSelectedShapeIds = prevSelectedShapeIds.filter((id) => !allIds.has(id))
+			const postSelectedIds = prevSelectedIds.filter((id) => !allIds.has(id))
 
-			return { data: { deletedIds, snapshots, prevSelectedShapeIds, postSelectedShapeIds } }
+			return { data: { deletedIds, snapshots, prevSelectedIds, postSelectedIds } }
 		},
 		{
-			do: ({ deletedIds, postSelectedShapeIds }) => {
+			do: ({ deletedIds, postSelectedIds }) => {
 				this.store.remove(deletedIds)
-				this.store.update(this.currentPageState.id, (state) => ({
+				this.store.update(this.pageState.id, (state) => ({
 					...state,
-					selectedShapeIds: postSelectedShapeIds,
+					selectedIds: postSelectedIds,
 				}))
 			},
-			undo: ({ snapshots, prevSelectedShapeIds }) => {
+			undo: ({ snapshots, prevSelectedIds }) => {
 				this.store.put(snapshots)
-				this.store.update(this.currentPageState.id, (state) => ({
+				this.store.update(this.pageState.id, (state) => ({
 					...state,
-					selectedShapeIds: prevSelectedShapeIds,
+					selectedIds: prevSelectedIds,
 				}))
 			},
 		}
@@ -7101,7 +7749,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @internal
 	 */
 	private _extractSharedStyles(shape: TLShape, sharedStyleMap: SharedStyleMap) {
-		if (this.isShapeOfType<TLGroupShape>(shape, 'group')) {
+		if (this.isShapeOfType(shape, GroupShapeUtil)) {
 			// For groups, ignore the styles of the group shape and instead include the styles of the
 			// group's children. These are the shapes that would have their styles changed if the
 			// user called `setStyle` on the current selection.
@@ -7109,10 +7757,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 			if (!childIds) return
 
 			for (let i = 0, n = childIds.length; i < n; i++) {
-				this._extractSharedStyles(this.getShape(childIds[i])!, sharedStyleMap)
+				this._extractSharedStyles(this.getShapeById(childIds[i][0])!, sharedStyleMap)
 			}
 		} else {
-			for (const [style, propKey] of this.styleProps[shape.type]) {
+			const util = this.getShapeUtil(shape)
+			for (const [style, propKey] of util.styleProps) {
 				sharedStyleMap.applyValue(style, getOwnProperty(shape.props, propKey))
 			}
 		}
@@ -7137,14 +7786,19 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 	)
 
+	@computed private get _stylesForNextShape() {
+		return this.instanceState.stylesForNextShape
+	}
+
 	/** @internal */
 	getStyleForNextShape<T>(style: StyleProp<T>): T {
-		const value = this.instanceState.stylesForNextShape[style.id]
+		const value = this._stylesForNextShape[style.id]
 		return value === undefined ? style.defaultValue : (value as T)
 	}
 
 	getShapeStyleIfExists<T>(shape: TLShape, style: StyleProp<T>): T | undefined {
-		const styleKey = this.styleProps[shape.type].get(style)
+		const util = this.getShapeUtil(shape)
+		const styleKey = util.styleProps.get(style)
 		if (styleKey === undefined) return undefined
 		return getOwnProperty(shape.props, styleKey) as T | undefined
 	}
@@ -7157,7 +7811,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * ```ts
 	 * const color = editor.sharedStyles.get(DefaultColorStyle)
 	 * if (color && color.type === 'shared') {
-	 *   print('All selected shapes have the same color:', color.value)
+	 *   console.log('All selected shapes have the same color:', color.value)
 	 * }
 	 * ```
 	 *
@@ -7167,7 +7821,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	get sharedStyles(): ReadonlySharedStyleMap {
 		// If we're in selecting and if we have a selection, return the shared styles from the
 		// current selection
-		if (this.isIn('select') && this.selectedShapeIds.length > 0) {
+		if (this.isIn('select') && this.selectedIds.length > 0) {
 			return this._selectionSharedStyles.value
 		}
 
@@ -7176,7 +7830,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 		const currentTool = this.root.current.value!
 		const styles = new SharedStyleMap()
 		if (currentTool.shapeType) {
-			for (const style of this.styleProps[currentTool.shapeType].keys()) {
+			for (const style of this.getShapeUtil(currentTool.shapeType).styleProps.keys()) {
 				styles.applyValue(style, this.getStyleForNextShape(style))
 			}
 		}
@@ -7192,23 +7846,23 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	@computed get sharedOpacity(): SharedStyle<number> {
-		if (this.isIn('select') && this.selectedShapeIds.length > 0) {
+		if (this.isIn('select') && this.selectedIds.length > 0) {
 			const shapesToCheck: TLShape[] = []
 			const addShape = (shapeId: TLShapeId) => {
-				const shape = this.getShape(shapeId)
+				const shape = this.getShapeById(shapeId)
 				if (!shape) return
 				// For groups, ignore the opacity of the group shape and instead include
 				// the opacity of the group's children. These are the shapes that would have
 				// their opacity changed if the user called `setOpacity` on the current selection.
-				if (this.isShapeOfType<TLGroupShape>(shape, 'group')) {
-					for (const childId of this.getSortedChildIdsForParent(shape.id)) {
+				if (this.isShapeOfType(shape, GroupShapeUtil)) {
+					for (const childId of this.getSortedChildIds(shape.id)) {
 						addShape(childId)
 					}
 				} else {
 					shapesToCheck.push(shape)
 				}
 			}
-			for (const shapeId of this.selectedShapeIds) {
+			for (const shapeId of this.selectedIds) {
 				addShape(shapeId)
 			}
 
@@ -7227,326 +7881,200 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
-	 * Set the opacity for the next shapes. This will effect subsequently created shapes.
+	 * Set the current opacity. This will effect any selected shapes, or the
+	 * next-created shape.
 	 *
 	 * @example
 	 * ```ts
-	 * editor.setOpacityForNextShapes(0.5)
-	 * editor.setOpacityForNextShapes(0.5, { squashing: true })
+	 * editor.setOpacity(0.5)
+	 * editor.setOpacity(0.5, true)
 	 * ```
 	 *
 	 * @param opacity - The opacity to set. Must be a number between 0 and 1 inclusive.
-	 * @param historyOptions - The history options for the change.
+	 * @param ephemeral - Whether the opacity change is ephemeral. Ephemeral changes don't get added to the undo/redo stack. Defaults to false.
+	 * @param squashing - Whether the opacity change will be squashed into the existing history entry rather than creating a new one. Defaults to false.
 	 */
-	setOpacityForNextShapes(opacity: number, historyOptions?: TLCommandHistoryOptions): this {
-		this.updateInstanceState({ opacityForNextShape: opacity }, historyOptions)
-		return this
-	}
+	setOpacity(opacity: number, ephemeral = false, squashing = false): this {
+		this.history.batch(() => {
+			if (this.isIn('select')) {
+				const {
+					pageState: { selectedIds },
+				} = this
 
-	/**
-	 * Set the current opacity. This will effect any selected shapes.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.setOpacityForSelectedShapes(0.5)
-	 * editor.setOpacityForSelectedShapes(0.5, { squashing: true })
-	 * ```
-	 *
-	 * @param opacity - The opacity to set. Must be a number between 0 and 1 inclusive.
-	 * @param historyOptions - The history options for the change.
-	 */
-	setOpacityForSelectedShapes(opacity: number, historyOptions?: TLCommandHistoryOptions): this {
-		const { selectedShapes } = this
+				const shapesToUpdate: TLShape[] = []
 
-		if (selectedShapes.length > 0) {
-			const shapesToUpdate: TLShape[] = []
-
-			// We can have many deep levels of grouped shape
-			// Making a recursive function to look through all the levels
-			const addShapeById = (shape: TLShape) => {
-				if (this.isShapeOfType<TLGroupShape>(shape, 'group')) {
-					const childIds = this.getSortedChildIdsForParent(shape)
-					for (const childId of childIds) {
-						addShapeById(this.getShape(childId)!)
-					}
-				} else {
-					shapesToUpdate.push(shape)
-				}
-			}
-
-			for (const id of selectedShapes) {
-				addShapeById(id)
-			}
-
-			this.updateShapes(
-				shapesToUpdate.map((shape) => {
-					return {
-						id: shape.id,
-						type: shape.type,
-						opacity,
-					}
-				}),
-				historyOptions
-			)
-		}
-
-		return this
-	}
-
-	/**
-	 * Set the value of a {@link @tldraw/tlschema#StyleProp} for the selected shapes.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.setStyleForSelectedShapes(DefaultColorStyle, 'red')
-	 * editor.setStyleForSelectedShapes(DefaultColorStyle, 'red', { ephemeral: true })
-	 * ```
-	 *
-	 * @param style - The style to set.
-	 * @param value - The value to set.
-	 * @param historyOptions - (optional) The history options for the change.
-	 *
-	 * @public
-	 */
-	setStyleForNextShapes<T>(
-		style: StyleProp<T>,
-		value: T,
-		historyOptions?: TLCommandHistoryOptions
-	): this {
-		const {
-			instanceState: { stylesForNextShape },
-		} = this
-
-		this.updateInstanceState(
-			{ stylesForNextShape: { ...stylesForNextShape, [style.id]: value } },
-			historyOptions
-		)
-
-		return this
-	}
-
-	/**
-	 * Set the value of a {@link @tldraw/tlschema#StyleProp}. This change will be applied to the currently selected shapes.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.setStyleForSelectedShapes(DefaultColorStyle, 'red')
-	 * editor.setStyleForSelectedShapes(DefaultColorStyle, 'red', { ephemeral: true })
-	 * ```
-	 *
-	 * @param style - The style to set.
-	 * @param value - The value to set.
-	 * @param historyOptions - (optional) The history options for the change.
-	 *
-	 * @public
-	 */
-	setStyleForSelectedShapes<T>(
-		style: StyleProp<T>,
-		value: T,
-		historyOptions?: TLCommandHistoryOptions
-	): this {
-		const { selectedShapes } = this
-
-		if (selectedShapes.length > 0) {
-			const updates: {
-				util: ShapeUtil
-				originalShape: TLShape
-				updatePartial: TLShapePartial
-			}[] = []
-
-			// We can have many deep levels of grouped shape
-			// Making a recursive function to look through all the levels
-			const addShapeById = (shape: TLShape) => {
-				if (this.isShapeOfType<TLGroupShape>(shape, 'group')) {
-					const childIds = this.getSortedChildIdsForParent(shape.id)
-					for (const childId of childIds) {
-						addShapeById(this.getShape(childId)!)
-					}
-				} else {
-					const util = this.getShapeUtil(shape)
-					const stylePropKey = this.styleProps[shape.type].get(style)
-					if (stylePropKey) {
-						const shapePartial: TLShapePartial = {
-							id: shape.id,
-							type: shape.type,
-							props: { [stylePropKey]: value },
+				// We can have many deep levels of grouped shape
+				// Making a recursive function to look through all the levels
+				const addShapeById = (id: TLShape['id']) => {
+					const shape = this.getShapeById(id)
+					if (!shape) return
+					if (this.isShapeOfType(shape, GroupShapeUtil)) {
+						const childIds = this.getSortedChildIds(id)
+						for (const childId of childIds) {
+							addShapeById(childId)
 						}
-						updates.push({
-							util,
-							originalShape: shape,
-							updatePartial: shapePartial,
-						})
+					} else {
+						shapesToUpdate.push(shape)
 					}
+				}
+
+				if (selectedIds.length > 0) {
+					for (const id of selectedIds) {
+						addShapeById(id)
+					}
+
+					this.updateShapes(
+						shapesToUpdate.map((shape) => {
+							return {
+								id: shape.id,
+								type: shape.type,
+								opacity,
+							}
+						}),
+						ephemeral
+					)
 				}
 			}
 
-			for (const shape of selectedShapes) {
-				addShapeById(shape)
+			this.updateInstanceState({ opacityForNextShape: opacity }, ephemeral, squashing)
+		})
+
+		return this
+	}
+
+	/**
+	 * Set the value of a {@link @tldraw/tlschema#StyleProp}. This change will be applied to any
+	 * selected shapes, and any subsequently created shapes.
+	 *
+	 * @example
+	 * ```ts
+	 * editor.setProp(DefaultColorStyle, 'red')
+	 * editor.setProp(DefaultColorStyle, 'red', true)
+	 * ```
+	 *
+	 * @param style - The style to set.
+	 * @param value - The value to set.
+	 * @param ephemeral - Whether the style change is ephemeral. Ephemeral changes don't get added
+	 * to the undo/redo stack. Defaults to false.
+	 * @param squashing - Whether the style change will be squashed into the existing history entry
+	 * rather than creating a new one. Defaults to false.
+	 *
+	 * @public
+	 */
+	setStyle<T>(style: StyleProp<T>, value: T, ephemeral = false, squashing = false): this {
+		this.history.batch(() => {
+			if (this.isIn('select')) {
+				const {
+					pageState: { selectedIds },
+				} = this
+
+				if (selectedIds.length > 0) {
+					const updates: {
+						util: ShapeUtil
+						originalShape: TLShape
+						updatePartial: TLShapePartial
+					}[] = []
+
+					// We can have many deep levels of grouped shape
+					// Making a recursive function to look through all the levels
+					const addShapeById = (id: TLShape['id']) => {
+						const shape = this.getShapeById(id)
+						if (!shape) return
+						if (this.isShapeOfType(shape, GroupShapeUtil)) {
+							const childIds = this.getSortedChildIds(id)
+							for (const childId of childIds) {
+								addShapeById(childId)
+							}
+						} else {
+							const util = this.getShapeUtil(shape)
+							const stylePropKey = util.styleProps.get(style)
+							if (stylePropKey) {
+								const shapePartial: TLShapePartial = {
+									id: shape.id,
+									type: shape.type,
+									props: { [stylePropKey]: value },
+								}
+								updates.push({
+									util,
+									originalShape: shape,
+									updatePartial: shapePartial,
+								})
+							}
+						}
+					}
+
+					for (const id of selectedIds) {
+						addShapeById(id)
+					}
+
+					this.updateShapes(
+						updates.map(({ updatePartial }) => updatePartial),
+						ephemeral
+					)
+				}
 			}
 
-			this.updateShapes(
-				updates.map(({ updatePartial }) => updatePartial),
-				historyOptions
+			this.updateInstanceState(
+				{
+					stylesForNextShape: { ...this._stylesForNextShape, [style.id]: value },
+				},
+				ephemeral,
+				squashing
 			)
-		}
+		})
 
 		return this
 	}
 
 	/* --------------------- Content -------------------- */
 
-	/** @internal */
-	externalAssetContentHandlers: {
-		[K in TLExternalAssetContent['type']]: {
-			[Key in K]:
-				| null
-				| ((info: TLExternalAssetContent & { type: Key }) => Promise<TLAsset | undefined>)
-		}[K]
-	} = {
-		file: null,
-		url: null,
-	}
-
-	/**
-	 * Register an external content handler. This handler will be called when the editor receives
-	 * external content of the provided type. For example, the 'image' type handler will be called
-	 * when a user drops an image onto the canvas.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.registerExternalAssetHandler('text', myHandler)
-	 * ```
-	 *
-	 * @param type - The type of external content.
-	 * @param handler - The handler to use for this content type.
-	 *
-	 * @public
-	 */
-	registerExternalAssetHandler<T extends TLExternalAssetContent['type']>(
-		type: T,
-		handler: null | ((info: TLExternalAssetContent & { type: T }) => Promise<TLAsset>)
-	): this {
-		this.externalAssetContentHandlers[type] = handler as any
-		return this
-	}
-
-	/**
-	 * Get an asset for an external asset content type.
-	 *
-	 * @example
-	 * ```ts
-	 * const asset = await editor.getAssetForExternalContent({ type: 'file', file: myFile })
-	 * const asset = await editor.getAssetForExternalContent({ type: 'url', url: myUrl })
-	 * ```
-	 *
-	 * @param info - Info about the external content.
-	 * @returns The asset.
-	 */
-	async getAssetForExternalContent(info: TLExternalAssetContent): Promise<TLAsset | undefined> {
-		return await this.externalAssetContentHandlers[info.type]?.(info as any)
-	}
-
-	/** @internal */
-	externalContentHandlers: {
-		[K in TLExternalContent['type']]: {
-			[Key in K]: null | ((info: TLExternalContent & { type: Key }) => void)
-		}[K]
-	} = {
-		text: null,
-		files: null,
-		embed: null,
-		'svg-text': null,
-		url: null,
-	}
-
-	/**
-	 * Register an external content handler. This handler will be called when the editor receives
-	 * external content of the provided type. For example, the 'image' type handler will be called
-	 * when a user drops an image onto the canvas.
-	 *
-	 * @example
-	 * ```ts
-	 * editor.registerExternalContentHandler('text', myHandler)
-	 * ```
-	 *
-	 * @param type - The type of external content.
-	 * @param handler - The handler to use for this content type.
-	 *
-	 * @public
-	 */
-	registerExternalContentHandler<T extends TLExternalContent['type']>(
-		type: T,
-		handler:
-			| null
-			| ((
-					info: T extends TLExternalContent['type']
-						? TLExternalContent & { type: T }
-						: TLExternalContent
-			  ) => void)
-	): this {
-		this.externalContentHandlers[type] = handler as any
-		return this
-	}
-
-	/**
-	 * Handle external content, such as files, urls, embeds, or plain text which has been put into the app, for example by pasting external text or dropping external images onto canvas.
-	 *
-	 * @param info - Info about the external content.
-	 */
-	async putExternalContent(info: TLExternalContent): Promise<void> {
-		return this.externalContentHandlers[info.type]?.(info as any)
-	}
+	/** @public */
+	externalContentManager = new ExternalContentManager(this)
 
 	/**
 	 * Get content that can be exported for the given shape ids.
 	 *
-	 * @param shapes - The shapes (or shape ids) to get content for.
+	 * @param ids - The ids of the shapes to get content for. Defaults to the selected shape ids.
 	 *
 	 * @returns The exported content.
 	 *
 	 * @public
 	 */
-	getContentFromCurrentPage(shapes: TLShapeId[] | TLShape[]): TLContent | undefined {
-		// todo: make this work with any page, not just the current page
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
+	getContent(ids: TLShapeId[] = this.selectedIds): TLContent | undefined {
 		if (!ids) return
 		if (ids.length === 0) return
 
 		const pageTransforms: Record<string, Matrix2dModel> = {}
 
-		let shapesForContent = dedupe(
+		let shapes = dedupe(
 			ids
-				.map((id) => this.getShape(id)!)
+				.map((id) => this.getShapeById(id)!)
 				.sort(sortByIndex)
 				.flatMap((shape) => {
 					const allShapes = [shape]
 					this.visitDescendants(shape.id, (descendant) => {
-						allShapes.push(this.getShape(descendant)!)
+						allShapes.push(this.getShapeById(descendant)!)
 					})
 					return allShapes
 				})
 		)
 
-		shapesForContent = shapesForContent.map((shape) => {
-			pageTransforms[shape.id] = this.getShapePageTransform(shape.id)!
+		shapes = shapes.map((shape) => {
+			pageTransforms[shape.id] = this.getPageTransformById(shape.id)!
 
 			shape = structuredClone(shape) as typeof shape
 
-			if (this.isShapeOfType<TLArrowShape>(shape, 'arrow')) {
+			if (this.isShapeOfType(shape, ArrowShapeUtil)) {
 				const startBindingId =
 					shape.props.start.type === 'binding' ? shape.props.start.boundShapeId : undefined
 
 				const endBindingId =
 					shape.props.end.type === 'binding' ? shape.props.end.boundShapeId : undefined
 
-				const info = this.getArrowInfo(shape)
+				const info = this.getShapeUtil(ArrowShapeUtil).getArrowInfo(shape)
 
 				if (shape.props.start.type === 'binding') {
-					if (!shapesForContent.some((s) => s.id === startBindingId)) {
+					if (!shapes.some((s) => s.id === startBindingId)) {
 						// Uh oh, the arrow's bound-to shape isn't among the shapes
 						// that we're getting the content for. We should try to adjust
 						// the arrow so that it appears in the place it would be
@@ -7569,7 +8097,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				}
 
 				if (shape.props.end.type === 'binding') {
-					if (!shapesForContent.some((s) => s.id === endBindingId)) {
+					if (!shapes.some((s) => s.id === endBindingId)) {
 						if (info?.isValid) {
 							const { x, y } = info.end.point
 							shape.props.end = {
@@ -7611,14 +8139,13 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const rootShapeIds: TLShapeId[] = []
 
-		shapesForContent.forEach((shape) => {
-			if (shapesForContent.find((s) => s.id === shape.parentId) === undefined) {
+		shapes.forEach((shape) => {
+			if (shapes.find((s) => s.id === shape.parentId) === undefined) {
 				// Need to get page point and rotation of the shape because shapes in
 				// groups use local position/rotation
 
-				const pageTransform = this.getShapePageTransform(shape.id)!
-				const pagePoint = pageTransform.point()
-				const pageRotation = pageTransform.rotation()
+				const pagePoint = this.getPagePointById(shape.id)!
+				const pageRotation = this.getPageRotationById(shape.id)!
 				shape.x = pagePoint.x
 				shape.y = pagePoint.y
 				shape.rotation = pageRotation
@@ -7630,7 +8157,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 		const assetsSet = new Set<TLAssetId>()
 
-		shapesForContent.forEach((shape) => {
+		shapes.forEach((shape) => {
 			if ('assetId' in shape.props) {
 				if (shape.props.assetId !== null) {
 					assetsSet.add(shape.props.assetId)
@@ -7639,10 +8166,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 		})
 
 		return {
-			shapes: shapesForContent,
+			shapes,
 			rootShapeIds,
 			schema: this.store.schema.serialize(),
-			assets: compact(Array.from(assetsSet).map((id) => this.getAsset(id))),
+			assets: compact(Array.from(assetsSet).map((id) => this.getAssetById(id))),
 		}
 	}
 
@@ -7654,7 +8181,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	putContentOntoCurrentPage(
+	putContent(
 		content: TLContent,
 		options: {
 			point?: VecLike
@@ -7663,12 +8190,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 			preserveIds?: boolean
 		} = {}
 	): this {
-		if (this.instanceState.isReadonly) return this
-
-		// todo: make this able to support putting content onto any page, not just the current page
+		if (this.isReadOnly) return this
 
 		if (!content.schema) {
-			throw Error('Could not put content:\ncontent is missing a schema.')
+			throw Error('Could not put content: content is missing a schema.')
 		}
 
 		const { select = false, preserveIds = false, preservePosition = false } = options
@@ -7690,8 +8215,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 		for (const shape of this.selectedShapes) {
 			if (lowestDepth === 0) break
 
-			const isFrame = this.isShapeOfType<TLFrameShape>(shape, 'frame')
-			const ancestors = this.getShapeAncestors(shape)
+			const isFrame = this.isShapeOfType(shape, FrameShapeUtil)
+			const ancestors = this.getAncestors(shape)
 			if (isFrame) ancestors.push(shape)
 
 			const depth = isFrame ? ancestors.length + 1 : ancestors.length
@@ -7721,16 +8246,16 @@ export class Editor extends EventEmitter<TLEventMap> {
 		let isDuplicating = false
 
 		if (!isPageId(pasteParentId)) {
-			const parent = this.getShape(pasteParentId)
+			const parent = this.getShapeById(pasteParentId)
 			if (parent) {
-				if (!this.viewportPageBounds.includes(this.getShapePageBounds(parent)!)) {
+				if (!this.viewportPageBounds.includes(this.getPageBounds(parent)!)) {
 					pasteParentId = currentPageId
 				} else {
 					if (rootShapeIds.length === 1) {
 						const rootShape = shapes.find((s) => s.id === rootShapeIds[0])!
 						if (
-							this.isShapeOfType<TLFrameShape>(parent, 'frame') &&
-							this.isShapeOfType<TLFrameShape>(rootShape, 'frame') &&
+							this.isShapeOfType(parent, FrameShapeUtil) &&
+							this.isShapeOfType(rootShape, FrameShapeUtil) &&
 							rootShape.props.w === parent?.props.w &&
 							rootShape.props.h === parent?.props.h
 						) {
@@ -7748,10 +8273,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 		}
 
 		if (isDuplicating) {
-			pasteParentId = this.getShape(pasteParentId)!.parentId
+			pasteParentId = this.getShapeById(pasteParentId)!.parentId
 		}
 
-		let index = this.getHighestIndexForParent(pasteParentId) // todo: requires that the putting page is the current page
+		let index = this.getHighestIndexForParent(pasteParentId)
 
 		const rootShapes: TLShape[] = []
 
@@ -7786,7 +8311,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				index = getIndexAbove(index)
 			}
 
-			if (this.isShapeOfType<TLArrowShape>(newShape, 'arrow')) {
+			if (this.isShapeOfType(newShape, ArrowShapeUtil)) {
 				if (newShape.props.start.type === 'binding') {
 					const mappedId = idMap.get(newShape.props.start.boundShapeId)
 					newShape.props.start = mappedId
@@ -7828,7 +8353,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 					assets[i] = result.value as TLAsset
 				} else {
 					throw Error(
-						`Could not put content:\ncould not migrate content for asset:\n${asset.id}\n${asset.type}\nreason:${result.reason}`
+						`Could not put content: could not migrate content for asset:\n${JSON.stringify(
+							asset,
+							null,
+							2
+						)}`
 					)
 				}
 			}
@@ -7858,11 +8387,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 						asset.props.mimeType ?? 'image/png'
 					)
 
-					const newAsset = await this.getAssetForExternalContent({ type: 'file', file })
-
-					if (!newAsset) {
-						return null
-					}
+					const newAsset = await this.externalContentManager.createAssetFromFile(this, file)
 
 					return [asset, newAsset] as const
 				})
@@ -7870,7 +8395,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				this.updateAssets(
 					compact(
 						assets.map((result) =>
-							result.status === 'fulfilled' && result.value
+							result.status === 'fulfilled'
 								? { ...result.value[1], id: result.value[0].id }
 								: undefined
 						)
@@ -7886,7 +8411,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 				newShapes[i] = result.value as TLShape
 			} else {
 				throw Error(
-					`Could not put content:\ncould not migrate content for shape:\n${shape.id}, ${shape.type}\nreason:${result.reason}`
+					`Could not put content: could not migrate content for shape:\n${JSON.stringify(
+						shape,
+						null,
+						2
+					)}`
 				)
 			}
 		}
@@ -7898,31 +8427,25 @@ export class Editor extends EventEmitter<TLEventMap> {
 			}
 
 			// Create the shapes with root shapes as children of the page
-			this.createShapes(newShapes)
-
-			if (select) {
-				this.select(...rootShapes.map((s) => s.id))
-			}
+			this.createShapes(newShapes, select)
 
 			// And then, if needed, reparent the root shapes to the paste parent
 			if (pasteParentId !== currentPageId) {
-				this.reparentShapes(
+				this.reparentShapesById(
 					rootShapes.map((s) => s.id),
 					pasteParentId
 				)
 			}
 
-			const newCreatedShapes = newShapes.map((s) => this.getShape(s.id)!)
-			const bounds = Box2d.Common(newCreatedShapes.map((s) => this.getShapePageBounds(s)!))
+			const newCreatedShapes = newShapes.map((s) => this.getShapeById(s.id)!)
+			const bounds = Box2d.Common(newCreatedShapes.map((s) => this.getPageBounds(s)!))
 
 			if (point === undefined) {
 				if (!isPageId(pasteParentId)) {
 					// Put the shapes in the middle of the (on screen) parent
-					const shape = this.getShape(pasteParentId)!
-					point = Matrix2d.applyToPoint(
-						this.getShapePageTransform(shape),
-						this.getShapeGeometry(shape).bounds.center
-					)
+					const shape = this.getShapeById(pasteParentId)!
+					const util = this.getShapeUtil(shape)
+					point = util.center(shape)
 				} else {
 					const { viewportPageBounds } = this
 					if (preservePosition || viewportPageBounds.includes(Box2d.From(bounds))) {
@@ -7939,11 +8462,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 			if (rootShapes.length === 1) {
 				const onlyRoot = rootShapes[0] as TLFrameShape
 				// If the old bounds are in the viewport...
-				if (this.isShapeOfType<TLFrameShape>(onlyRoot, 'frame')) {
+				if (this.isShapeOfType(onlyRoot, FrameShapeUtil)) {
 					while (
 						this.getShapesAtPoint(point).some(
 							(shape) =>
-								this.isShapeOfType<TLFrameShape>(shape, 'frame') &&
+								this.isShapeOfType(shape, FrameShapeUtil) &&
 								shape.props.w === onlyRoot.props.w &&
 								shape.props.h === onlyRoot.props.h
 						)
@@ -7953,19 +8476,14 @@ export class Editor extends EventEmitter<TLEventMap> {
 				}
 			}
 
-			const pageCenter = Box2d.Common(
-				compact(rootShapes.map(({ id }) => this.getShapePageBounds(id)))
-			).center
-
-			const offset = Vec2d.Sub(point, pageCenter)
-
 			this.updateShapes(
-				rootShapes.map(({ id }) => {
-					const s = this.getShape(id)!
-					const localRotation = this.getShapeParentTransform(id).decompose().rotation
-					const localDelta = Vec2d.Rot(offset, -localRotation)
+				rootShapes.map((s) => {
+					const delta = {
+						x: (s.x ?? 0) - (bounds.x + bounds.w / 2),
+						y: (s.y ?? 0) - (bounds.y + bounds.h / 2),
+					}
 
-					return { id: s.id, type: s.type, x: s.x + localDelta.x, y: s.y + localDelta.y }
+					return { id: s.id, type: s.type, x: point!.x + delta.x, y: point!.y + delta.y }
 				})
 			)
 		})
@@ -7974,9 +8492,41 @@ export class Editor extends EventEmitter<TLEventMap> {
 	}
 
 	/**
+	 * Replace the store's contents with the given records.
+	 *
+	 * @param records - The records to replace the store's contents with.
+	 */
+	replaceStoreContentsWithRecordsForOtherDocument(records: TLRecord[]) {
+		transact(() => {
+			this.store.clear()
+			const [shapes, nonShapes] = partition(records, (record) => record.typeName === 'shape')
+			this.store.put(nonShapes, 'initialize')
+			this.store.ensureStoreIsUsable()
+			this.store.put(shapes, 'initialize')
+			this.history.clear()
+			this.updateViewportScreenBounds()
+			this.updateRenderingBounds()
+
+			const bounds = this.allShapesCommonBounds
+			if (bounds) {
+				this.zoomToBounds(bounds.minX, bounds.minY, bounds.width, bounds.height, 1)
+			}
+		})
+	}
+
+	/**
+	 * Handle external content, such as files, urls, embeds, or plain text which has been put into the app, for example by pasting external text or dropping external images onto canvas.
+	 *
+	 * @param info - Info about the external content.
+	 */
+	async putExternalContent(info: TLExternalContent): Promise<void> {
+		this.externalContentManager.handleContent(info)
+	}
+
+	/**
 	 * Get an exported SVG of the given shapes.
 	 *
-	 * @param ids - The shapes (or shape ids) to export.
+	 * @param ids - The ids of the shapes to export. Defaults to selected shapes.
 	 * @param opts - Options for the export.
 	 *
 	 * @returns The SVG element.
@@ -7984,7 +8534,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	async getSvg(
-		shapes: TLShapeId[] | TLShape[],
+		ids: TLShapeId[] = this.selectedIds.length
+			? this.selectedIds
+			: (Object.keys(this.currentPageShapeIds) as TLShapeId[]),
 		opts = {} as Partial<{
 			scale: number
 			background: boolean
@@ -7993,11 +8545,6 @@ export class Editor extends EventEmitter<TLEventMap> {
 			preserveAspectRatio: React.SVGAttributes<SVGSVGElement>['preserveAspectRatio']
 		}>
 	) {
-		const ids =
-			typeof shapes[0] === 'string'
-				? (shapes as TLShapeId[])
-				: (shapes as TLShape[]).map((s) => s.id)
-
 		if (ids.length === 0) return
 		if (!window.document) throw Error('No document')
 
@@ -8009,12 +8556,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 		} = opts
 
 		// todo: we shouldn't depend on the public theme here
-		const theme = getDefaultColorTheme({ isDarkMode: this.user.isDarkMode })
+		const theme = getDefaultColorTheme(this)
 
 		// ---Figure out which shapes we need to include
 		const shapeIdsToInclude = this.getShapeAndDescendantIds(ids)
-		const renderingShapes = this.getUnorderedRenderingShapes(false).filter(({ id }) =>
-			shapeIdsToInclude.has(id)
+		const renderingShapes = this.computeUnorderedRenderingShapes([this.currentPageId]).filter(
+			({ id }) => shapeIdsToInclude.has(id)
 		)
 
 		// --- Common bounding box of all shapes
@@ -8032,7 +8579,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 		if (!bbox) return
 
 		const singleFrameShapeId =
-			ids.length === 1 && this.isShapeOfType<TLFrameShape>(this.getShape(ids[0])!, 'frame')
+			ids.length === 1 && this.isShapeOfType(this.getShapeById(ids[0])!, FrameShapeUtil)
 				? ids[0]
 				: null
 		if (!singleFrameShapeId) {
@@ -8106,9 +8653,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 					// Don't render the frame if we're only exporting a single frame
 					if (id === singleFrameShapeId) return []
 
-					const shape = this.getShape(id)!
+					const shape = this.getShapeById(id)!
 
-					if (this.isShapeOfType<TLGroupShape>(shape, 'group')) return []
+					if (this.isShapeOfType(shape, GroupShapeUtil)) return []
 
 					const util = this.getShapeUtil(shape)
 
@@ -8129,7 +8676,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 					}
 
 					if (!shapeSvgElement && !backgroundSvgElement) {
-						const bounds = this.getShapePageBounds(shape)!
+						const bounds = this.getPageBounds(shape)!
 						const elm = window.document.createElementNS('http://www.w3.org/2000/svg', 'rect')
 						elm.setAttribute('width', bounds.width + '')
 						elm.setAttribute('height', bounds.height + '')
@@ -8139,7 +8686,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 						shapeSvgElement = elm
 					}
 
-					let pageTransform = this.getShapePageTransform(shape)!.toCssString()
+					let pageTransform = this.getPageTransform(shape)!.toCssString()
 					if ('scale' in shape.props) {
 						if (shape.props.scale !== 1) {
 							pageTransform = `${pageTransform} scale(${shape.props.scale}, ${shape.props.scale})`
@@ -8152,12 +8699,12 @@ export class Editor extends EventEmitter<TLEventMap> {
 					backgroundSvgElement?.setAttribute('opacity', opacity + '')
 
 					// Create svg mask if shape has a frame as parent
-					const pageMask = this.getShapeMask(shape.id)
+					const pageMask = this.getPageMaskById(shape.id)
 					if (pageMask) {
 						// Create a clip path and add it to defs
 						const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath')
 						defs.appendChild(clipPathEl)
-						const id = uniqueId()
+						const id = nanoid()
 						clipPathEl.id = id
 
 						// Create a polyline mask that does the clipping
@@ -8211,15 +8758,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 * @public
 	 */
 	inputs = {
-		/** The most recent pointer down's position in the current page space. */
+		/** The most recent pointer down's position in page space. */
 		originPagePoint: new Vec2d(),
 		/** The most recent pointer down's position in screen space. */
 		originScreenPoint: new Vec2d(),
-		/** The previous pointer position in the current page space. */
+		/** The previous pointer position in page space. */
 		previousPagePoint: new Vec2d(),
 		/** The previous pointer position in screen space. */
 		previousScreenPoint: new Vec2d(),
-		/** The most recent pointer position in the current page space. */
+		/** The most recent pointer position in page space. */
 		currentPagePoint: new Vec2d(),
 		/** The most recent pointer position in screen space. */
 		currentScreenPoint: new Vec2d(),
@@ -8254,7 +8801,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @param info - The event info.
 	 */
-	private _updateInputsFromEvent(info: TLPointerEventInfo | TLPinchEventInfo): void {
+	private _updateInputsFromEvent(info: TLPointerEventInfo | TLPinchEventInfo) {
 		const { previousScreenPoint, previousPagePoint, currentScreenPoint, currentPagePoint } =
 			this.inputs
 
@@ -8307,7 +8854,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	cancel(): this {
+	cancel() {
 		this.dispatch({ type: 'misc', name: 'cancel' })
 		return this
 	}
@@ -8322,7 +8869,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	interrupt(): this {
+	interrupt() {
 		this.dispatch({ type: 'misc', name: 'interrupt' })
 		return this
 	}
@@ -8337,7 +8884,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	complete(): this {
+	complete() {
 		this.dispatch({ type: 'misc', name: 'complete' })
 		return this
 	}
@@ -8426,7 +8973,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	private _didPinch = false
 
 	/** @internal */
-	private _selectedShapeIdsAtPointerDown: TLShapeId[] = []
+	private _selectedIdsAtPointerDown: TLShapeId[] = []
 
 	/** @internal */
 	capturedPointerId: number | null = null
@@ -8443,7 +8990,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 	 *
 	 * @public
 	 */
-	dispatch = (info: TLEventInfo): this => {
+	dispatch(info: TLEventInfo): this {
 		// prevent us from spamming similar event errors if we're crashed.
 		// todo: replace with new readonly mode?
 		if (this.crashingError) return this
@@ -8459,11 +9006,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 					if (this.inputs.isPanning) {
 						this.inputs.isPanning = false
-						this.updateInstanceState({
-							cursor: {
-								type: this._prevCursor,
-								rotation: 0,
-							},
+						this.setCursor({
+							type: this._prevCursor,
 						})
 					}
 				}
@@ -8504,7 +9048,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 			switch (type) {
 				case 'pinch': {
-					if (!this.instanceState.canMoveCamera) return
+					if (!this.canMoveCamera) return
 					this._updateInputsFromEvent(info)
 
 					switch (info.name) {
@@ -8513,8 +9057,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 							if (!inputs.isEditing) {
 								this._pinchStart = this.camera.z
-								if (!this._selectedShapeIdsAtPointerDown.length) {
-									this._selectedShapeIdsAtPointerDown = this.selectedShapeIds
+								if (!this._selectedIdsAtPointerDown.length) {
+									this._selectedIdsAtPointerDown = this.selectedIds.slice()
 								}
 
 								this._didPinch = true
@@ -8540,11 +9084,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 							const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
 
-							this.setCamera({
-								x: cx + dx / cz - x / cz + x / zoom,
-								y: cy + dy / cz - y / cz + y / zoom,
-								z: zoom,
-							})
+							this.setCamera(
+								cx + dx / cz - x / cz + x / zoom,
+								cy + dy / cz - y / cz + y / zoom,
+								zoom
+							)
 
 							return // Stop here!
 						}
@@ -8552,9 +9096,9 @@ export class Editor extends EventEmitter<TLEventMap> {
 							if (!inputs.isPinching) return this
 
 							inputs.isPinching = false
-							const { _selectedShapeIdsAtPointerDown } = this
-							this.setSelectedShapes(this._selectedShapeIdsAtPointerDown, { squashing: true })
-							this._selectedShapeIdsAtPointerDown = []
+							const { _selectedIdsAtPointerDown } = this
+							this.setSelectedIds(this._selectedIdsAtPointerDown, true)
+							this._selectedIdsAtPointerDown = []
 
 							const {
 								camera: { x: cx, y: cy, z: cz },
@@ -8574,12 +9118,10 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 							if (zoom !== undefined) {
 								const { x, y } = this.viewportScreenCenter
-								this.setCamera(
-									{
-										x: cx + (x / zoom - x) - (x / cz - x),
-										y: cy + (y / zoom - y) - (y / cz - y),
-										z: zoom,
-									},
+								this.animateCamera(
+									cx + (x / zoom - x) - (x / cz - x),
+									cy + (y / zoom - y) - (y / cz - y),
+									zoom,
 									{ duration: 100 }
 								)
 							}
@@ -8588,7 +9130,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 								this._didPinch = false
 								requestAnimationFrame(() => {
 									if (!this._didPinch) {
-										this.setSelectedShapes(_selectedShapeIdsAtPointerDown, { squashing: true })
+										this.setSelectedIds(_selectedIdsAtPointerDown, true)
 									}
 								})
 							}
@@ -8598,7 +9140,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 					}
 				}
 				case 'wheel': {
-					if (!this.instanceState.canMoveCamera) return
+					if (!this.canMoveCamera) return
 
 					if (this.isMenuOpen) {
 						// noop
@@ -8613,11 +9155,11 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 							const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, cz + (info.delta.z ?? 0) * cz))
 
-							this.setCamera({
-								x: cx + (x / zoom - x) - (x / cz - x),
-								y: cy + (y / zoom - y) - (y / cz - y),
-								z: zoom,
-							})
+							this.setCamera(
+								cx + (x / zoom - x) - (x / cz - x),
+								cy + (y / zoom - y) - (y / cz - y),
+								zoom
+							)
 
 							// We want to return here because none of the states in our
 							// statechart should respond to this event (a camera zoom)
@@ -8626,14 +9168,13 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 						// Update the camera here, which will dispatch a pointer move...
 						// this will also update the pointer position, etc
-						this.pan(info.delta)
+						this.pan(info.delta.x, info.delta.y)
 
 						if (
 							!inputs.isDragging &&
 							inputs.isPointing &&
 							originPagePoint.dist(currentPagePoint) >
-								(this.instanceState.isCoarsePointer ? COARSE_DRAG_DISTANCE : DRAG_DISTANCE) /
-									this.zoomLevel
+								(this.isCoarsePointer ? COARSE_DRAG_DISTANCE : DRAG_DISTANCE) / this.zoomLevel
 						) {
 							inputs.isDragging = true
 						}
@@ -8650,7 +9191,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 					switch (info.name) {
 						case 'pointer_down': {
-							this._selectedShapeIdsAtPointerDown = this.selectedShapeIds
+							this._selectedIdsAtPointerDown = this.selectedIds.slice()
 
 							// Firefox bug fix...
 							// If it's a left-mouse-click, we store the pointer id for later user
@@ -8664,13 +9205,13 @@ export class Editor extends EventEmitter<TLEventMap> {
 							inputs.isPointing = true
 							inputs.isDragging = false
 
-							if (this.instanceState.isPenMode) {
+							if (this.isPenMode) {
 								if (!isPen) {
 									return
 								}
 							} else {
 								if (isPen) {
-									this.updateInstanceState({ isPenMode: true })
+									this.setPenMode(true)
 								}
 							}
 
@@ -8678,7 +9219,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 								// Eraser button activates eraser
 								this._restoreToolId = this.currentToolId
 								this.complete()
-								this.setCurrentTool('eraser')
+								this.setSelectedTool('eraser')
 							} else if (info.button === 1) {
 								// Middle mouse pan activates panning
 								if (!this.inputs.isPanning) {
@@ -8690,11 +9231,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 							if (this.inputs.isPanning) {
 								this.stopCameraAnimation()
-								this.updateInstanceState({
-									cursor: {
-										type: 'grabbing',
-										rotation: 0,
-									},
+								this.setCursor({
+									type: 'grabbing',
 								})
 								return this
 							}
@@ -8705,14 +9243,15 @@ export class Editor extends EventEmitter<TLEventMap> {
 						}
 						case 'pointer_move': {
 							// If the user is in pen mode, but the pointer is not a pen, stop here.
-							if (!isPen && this.instanceState.isPenMode) {
+							if (!isPen && this.isPenMode) {
 								return
 							}
 
 							if (this.inputs.isPanning && this.inputs.isPointing) {
 								// Handle panning
 								const { currentScreenPoint, previousScreenPoint } = this.inputs
-								this.pan(Vec2d.Sub(currentScreenPoint, previousScreenPoint))
+								const delta = Vec2d.Sub(currentScreenPoint, previousScreenPoint)
+								this.pan(delta.x, delta.y)
 								return
 							}
 
@@ -8720,8 +9259,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 								!inputs.isDragging &&
 								inputs.isPointing &&
 								originPagePoint.dist(currentPagePoint) >
-									(this.instanceState.isCoarsePointer ? COARSE_DRAG_DISTANCE : DRAG_DISTANCE) /
-										this.zoomLevel
+									(this.isCoarsePointer ? COARSE_DRAG_DISTANCE : DRAG_DISTANCE) / this.zoomLevel
 							) {
 								inputs.isDragging = true
 							}
@@ -8739,7 +9277,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 								return
 							}
 
-							if (!isPen && this.instanceState.isPenMode) {
+							if (!isPen && this.isPenMode) {
 								return
 							}
 
@@ -8759,42 +9297,36 @@ export class Editor extends EventEmitter<TLEventMap> {
 										this.slideCamera({
 											speed: Math.min(2, this.inputs.pointerVelocity.len()),
 											direction: this.inputs.pointerVelocity,
-											friction: CAMERA_SLIDE_FRICTION,
+											friction: HAND_TOOL_FRICTION,
 										})
-										this.updateInstanceState({
-											cursor: { type: this._prevCursor, rotation: 0 },
+										this.setCursor({
+											type: this._prevCursor,
 										})
 									} else {
 										this.slideCamera({
 											speed: Math.min(2, this.inputs.pointerVelocity.len()),
 											direction: this.inputs.pointerVelocity,
-											friction: CAMERA_SLIDE_FRICTION,
+											friction: HAND_TOOL_FRICTION,
 										})
-										this.updateInstanceState({
-											cursor: {
-												type: 'grab',
-												rotation: 0,
-											},
+										this.setCursor({
+											type: 'grab',
 										})
 									}
 								} else if (info.button === 0) {
 									this.slideCamera({
 										speed: Math.min(2, this.inputs.pointerVelocity.len()),
 										direction: this.inputs.pointerVelocity,
-										friction: CAMERA_SLIDE_FRICTION,
+										friction: HAND_TOOL_FRICTION,
 									})
-									this.updateInstanceState({
-										cursor: {
-											type: 'grab',
-											rotation: 0,
-										},
+									this.setCursor({
+										type: 'grab',
 									})
 								}
 							} else {
 								if (info.button === 5) {
 									// Eraser button activates eraser
 									this.complete()
-									this.setCurrentTool(this._restoreToolId)
+									this.setSelectedTool(this._restoreToolId)
 								}
 							}
 
@@ -8822,8 +9354,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 								}
 
 								this.inputs.isPanning = true
-								this.updateInstanceState({
-									cursor: { type: this.inputs.isPointing ? 'grabbing' : 'grab', rotation: 0 },
+								this.setCursor({
+									type: this.inputs.isPointing ? 'grabbing' : 'grab',
 								})
 							}
 
@@ -8835,8 +9367,8 @@ export class Editor extends EventEmitter<TLEventMap> {
 
 							if (info.code === 'Space' && !this.inputs.buttons.has(1)) {
 								this.inputs.isPanning = false
-								this.updateInstanceState({
-									cursor: { type: this._prevCursor, rotation: 0 },
+								this.setCursor({
+									type: this._prevCursor,
 								})
 							}
 
@@ -8860,7 +9392,7 @@ export class Editor extends EventEmitter<TLEventMap> {
 				}
 
 				// If a pointer event, send the event to the click manager.
-				if (info.isPen === this.instanceState.isPenMode) {
+				if (info.isPen === this.isPenMode) {
 					switch (info.name) {
 						case 'pointer_down': {
 							const otherEvent = this._clickManager.transformPointerDownEvent(info)
@@ -8905,6 +9437,6 @@ export class Editor extends EventEmitter<TLEventMap> {
 }
 
 function alertMaxShapes(editor: Editor, pageId = editor.currentPageId) {
-	const name = editor.getPage(pageId)!.name
+	const name = editor.getPageById(pageId)!.name
 	editor.emit('max-shapes', { name, pageId, count: MAX_SHAPES_PER_PAGE })
 }

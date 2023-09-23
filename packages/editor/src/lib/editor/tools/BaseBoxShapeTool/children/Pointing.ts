@@ -1,5 +1,5 @@
+import { Vec2d } from '@tldraw/primitives'
 import { createShapeId } from '@tldraw/tlschema'
-import { Vec2d } from '../../../../primitives/Vec2d'
 import { TLBaseBoxShape } from '../../../shapes/BaseBoxShapeUtil'
 import { TLEventHandlers } from '../../../types/event-types'
 import { StateNode } from '../../StateNode'
@@ -8,29 +8,27 @@ import { BaseBoxShapeTool } from '../BaseBoxShapeTool'
 export class Pointing extends StateNode {
 	static override id = 'pointing'
 
-	markId = ''
+	markId = 'creating'
 
 	wasFocusedOnEnter = false
 
-	override onEnter = () => {
+	onEnter = () => {
 		const { isMenuOpen } = this.editor
 		this.wasFocusedOnEnter = !isMenuOpen
 	}
 
-	override onPointerMove: TLEventHandlers['onPointerMove'] = (info) => {
+	onPointerMove: TLEventHandlers['onPointerMove'] = (info) => {
 		if (this.editor.inputs.isDragging) {
 			const { originPagePoint } = this.editor.inputs
 
-			const shapeType = (this.parent as BaseBoxShapeTool)!.shapeType
+			const shapeType = (this.parent as BaseBoxShapeTool)!.shapeType.type as TLBaseBoxShape['type']
 
 			const id = createShapeId()
 
-			this.markId = `creating:${id}`
-
 			this.editor.mark(this.markId)
 
-			this.editor
-				.createShapes<TLBaseBoxShape>([
+			this.editor.createShapes<TLBaseBoxShape>(
+				[
 					{
 						id,
 						type: shapeType,
@@ -41,9 +39,10 @@ export class Pointing extends StateNode {
 							h: 1,
 						},
 					},
-				])
-				.select(id)
-			this.editor.setCurrentTool('select.resizing', {
+				],
+				true
+			)
+			this.editor.setSelectedTool('select.resizing', {
 				...info,
 				target: 'selection',
 				handle: 'bottom_right',
@@ -79,7 +78,7 @@ export class Pointing extends StateNode {
 
 		this.editor.mark(this.markId)
 
-		const shapeType = (this.parent as BaseBoxShapeTool)!.shapeType as TLBaseBoxShape['type']
+		const shapeType = (this.parent as BaseBoxShapeTool)!.shapeType.type as TLBaseBoxShape['type']
 
 		const id = createShapeId()
 
@@ -94,12 +93,9 @@ export class Pointing extends StateNode {
 			},
 		])
 
-		const shape = this.editor.getShape<TLBaseBoxShape>(id)!
+		const shape = this.editor.getShapeById<TLBaseBoxShape>(id)!
 		const { w, h } = this.editor.getShapeUtil(shape).getDefaultProps() as TLBaseBoxShape['props']
-		const delta = new Vec2d(w / 2, h / 2)
-
-		const parentTransform = this.editor.getShapeParentTransform(shape)
-		if (parentTransform) delta.rot(-parentTransform.rotation())
+		const delta = this.editor.getDeltaInParentSpace(shape, new Vec2d(w / 2, h / 2))
 
 		this.editor.updateShapes<TLBaseBoxShape>([
 			{
@@ -110,12 +106,12 @@ export class Pointing extends StateNode {
 			},
 		])
 
-		this.editor.setSelectedShapes([id])
+		this.editor.setSelectedIds([id])
 
 		if (this.editor.instanceState.isToolLocked) {
 			this.parent.transition('idle', {})
 		} else {
-			this.editor.setCurrentTool('select.idle')
+			this.editor.setSelectedTool('select.idle')
 		}
 	}
 

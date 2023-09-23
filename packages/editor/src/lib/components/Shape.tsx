@@ -1,11 +1,11 @@
+import { Matrix2d } from '@tldraw/primitives'
 import { track, useQuickReactor, useStateTracking } from '@tldraw/state'
 import { TLShape, TLShapeId } from '@tldraw/tlschema'
 import * as React from 'react'
+import { useEditor } from '../..'
 import { ShapeUtil } from '../editor/shapes/ShapeUtil'
-import { nearestMultiple } from '../hooks/useDPRMultiple'
-import { useEditor } from '../hooks/useEditor'
 import { useEditorComponents } from '../hooks/useEditorComponents'
-import { Matrix2d } from '../primitives/Matrix2d'
+import { useShapeEvents } from '../hooks/useShapeEvents'
 import { OptionalErrorBoundary } from './ErrorBoundary'
 
 /*
@@ -21,16 +21,12 @@ opacity based on its own opacity and that of its parent's.
 */
 export const Shape = track(function Shape({
 	id,
-	shape,
-	util,
 	index,
 	backgroundIndex,
 	opacity,
 	isCulled,
 }: {
 	id: TLShapeId
-	shape: TLShape
-	util: ShapeUtil
 	index: number
 	backgroundIndex: number
 	opacity: number
@@ -39,6 +35,8 @@ export const Shape = track(function Shape({
 	const editor = useEditor()
 
 	const { ShapeErrorFallback } = useEditorComponents()
+
+	const events = useShapeEvents(id)
 
 	const containerRef = React.useRef<HTMLDivElement>(null)
 	const backgroundContainerRef = React.useRef<HTMLDivElement>(null)
@@ -51,10 +49,11 @@ export const Shape = track(function Shape({
 	useQuickReactor(
 		'set shape container transform position',
 		() => {
-			const shape = editor.getShape(id)
-			if (!shape) return // probably the shape was just deleted
+			const shape = editor.getShapeById(id)
+			const pageTransform = editor.getPageTransformById(id)
 
-			const pageTransform = editor.getShapePageTransform(id)
+			if (!shape || !pageTransform) return null
+
 			const transform = Matrix2d.toCssString(pageTransform)
 			setProperty('transform', transform)
 		},
@@ -64,10 +63,10 @@ export const Shape = track(function Shape({
 	useQuickReactor(
 		'set shape container clip path',
 		() => {
-			const shape = editor.getShape(id)
+			const shape = editor.getShapeById(id)
 			if (!shape) return null
 
-			const clipPath = editor.getShapeClipPath(id)
+			const clipPath = editor.getClipPathById(id)
 			setProperty('clip-path', clipPath ?? 'none')
 		},
 		[editor, setProperty]
@@ -76,22 +75,12 @@ export const Shape = track(function Shape({
 	useQuickReactor(
 		'set shape height and width',
 		() => {
-			const shape = editor.getShape(id)
+			const shape = editor.getShapeById(id)
 			if (!shape) return null
 
-			const bounds = editor.getShapeGeometry(shape).bounds
-			const dpr = editor.instanceState.devicePixelRatio
-			// dprMultiple is the smallest number we can multiply dpr by to get an integer
-			// it's usually 1, 2, or 4 (for e.g. dpr of 2, 2.5 and 2.25 respectively)
-			const dprMultiple = nearestMultiple(dpr)
-			// We round the shape width and height up to the nearest multiple of dprMultiple to avoid the browser
-			// making miscalculations when applying the transform.
-			const widthRemainder = bounds.w % dprMultiple
-			const width = widthRemainder === 0 ? bounds.w : bounds.w + (dprMultiple - widthRemainder)
-			const heightRemainder = bounds.h % dprMultiple
-			const height = heightRemainder === 0 ? bounds.h : bounds.h + (dprMultiple - heightRemainder)
-			setProperty('width', Math.max(width, dprMultiple) + 'px')
-			setProperty('height', Math.max(height, dprMultiple) + 'px')
+			const bounds = editor.getBounds(shape)
+			setProperty('width', Math.ceil(bounds.width) + 'px')
+			setProperty('height', Math.ceil(bounds.height) + 'px')
 		},
 		[editor]
 	)
@@ -103,6 +92,8 @@ export const Shape = track(function Shape({
 		backgroundContainerRef.current?.style.setProperty('z-index', backgroundIndex + '')
 	}, [opacity, index, backgroundIndex, setProperty])
 
+	const shape = editor.getShapeById(id)
+
 	const annotateError = React.useCallback(
 		(error: any) => {
 			editor.annotateError(error, { origin: 'react.shape', willCrashApp: false })
@@ -111,6 +102,8 @@ export const Shape = track(function Shape({
 	)
 
 	if (!shape) return null
+
+	const util = editor.getShapeUtil(shape)
 
 	return (
 		<>
@@ -128,11 +121,21 @@ export const Shape = track(function Shape({
 					)}
 				</div>
 			)}
-			<div ref={containerRef} className="tl-shape" data-shape-type={shape.type} draggable={false}>
-				{isCulled ? (
+			<div
+				ref={containerRef}
+				className="tl-shape"
+				data-shape-type={shape.type}
+				draggable={false}
+				onPointerDown={events.onPointerDown}
+				onPointerMove={events.onPointerMove}
+				onPointerUp={events.onPointerUp}
+				onPointerEnter={events.onPointerEnter}
+				onPointerLeave={events.onPointerLeave}
+			>
+				{isCulled && util.canUnmount(shape) ? (
 					<CulledShape shape={shape} />
 				) : (
-					<OptionalErrorBoundary fallback={ShapeErrorFallback as any} onError={annotateError}>
+					<OptionalErrorBoundary fallback={ShapeErrorFallback} onError={annotateError}>
 						<InnerShape shape={shape} util={util} />
 					</OptionalErrorBoundary>
 				)}
@@ -143,7 +146,7 @@ export const Shape = track(function Shape({
 
 const InnerShape = React.memo(
 	function InnerShape<T extends TLShape>({ shape, util }: { shape: T; util: ShapeUtil<T> }) {
-		return useStateTracking('InnerShape:' + shape.type, () => util.component(shape))
+		return useStateTracking('InnerShape:' + util.type, () => util.component(shape))
 	},
 	(prev, next) => prev.shape.props === next.shape.props && prev.shape.meta === next.shape.meta
 )
@@ -156,7 +159,7 @@ const InnerShapeBackground = React.memo(
 		shape: T
 		util: ShapeUtil<T>
 	}) {
-		return useStateTracking('InnerShape:' + shape.type, () => util.backgroundComponent?.(shape))
+		return useStateTracking('InnerShape:' + util.type, () => util.backgroundComponent?.(shape))
 	},
 	(prev, next) => prev.shape.props === next.shape.props && prev.shape.meta === next.shape.meta
 )
@@ -164,15 +167,15 @@ const InnerShapeBackground = React.memo(
 const CulledShape = React.memo(
 	function CulledShape<T extends TLShape>({ shape }: { shape: T }) {
 		const editor = useEditor()
-		const bounds = editor.getShapeGeometry(shape).bounds
+		const bounds = editor.getBounds(shape)
 
 		return (
 			<div
 				className="tl-shape__culled"
 				style={{
 					transform: `translate(${bounds.minX}px, ${bounds.minY}px)`,
-					width: Math.max(1, bounds.width),
-					height: Math.max(1, bounds.height),
+					width: bounds.width,
+					height: bounds.height,
 				}}
 			/>
 		)

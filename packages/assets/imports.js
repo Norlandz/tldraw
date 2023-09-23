@@ -19,7 +19,6 @@ import embedIconsReplit from './embed-icons/replit.png'
 import embedIconsScratch from './embed-icons/scratch.png'
 import embedIconsSpotify from './embed-icons/spotify.png'
 import embedIconsTldraw from './embed-icons/tldraw.png'
-import embedIconsValTown from './embed-icons/val_town.png'
 import embedIconsVimeo from './embed-icons/vimeo.png'
 import embedIconsYoutube from './embed-icons/youtube.png'
 import fontsMonospace from './fonts/IBMPlexMono-Medium.woff2'
@@ -102,7 +101,6 @@ import iconsGeoArrowLeft from './icons/icon/geo-arrow-left.svg'
 import iconsGeoArrowRight from './icons/icon/geo-arrow-right.svg'
 import iconsGeoArrowUp from './icons/icon/geo-arrow-up.svg'
 import iconsGeoCheckBox from './icons/icon/geo-check-box.svg'
-import iconsGeoCloud from './icons/icon/geo-cloud.svg'
 import iconsGeoDiamond from './icons/icon/geo-diamond.svg'
 import iconsGeoEllipse from './icons/icon/geo-ellipse.svg'
 import iconsGeoHexagon from './icons/icon/geo-hexagon.svg'
@@ -313,7 +311,6 @@ export function getAssetUrlsByImport(opts) {
 			'geo-arrow-right': formatAssetUrl(iconsGeoArrowRight, opts),
 			'geo-arrow-up': formatAssetUrl(iconsGeoArrowUp, opts),
 			'geo-check-box': formatAssetUrl(iconsGeoCheckBox, opts),
-			'geo-cloud': formatAssetUrl(iconsGeoCloud, opts),
 			'geo-diamond': formatAssetUrl(iconsGeoDiamond, opts),
 			'geo-ellipse': formatAssetUrl(iconsGeoEllipse, opts),
 			'geo-hexagon': formatAssetUrl(iconsGeoHexagon, opts),
@@ -452,7 +449,6 @@ export function getAssetUrlsByImport(opts) {
 			scratch: formatAssetUrl(embedIconsScratch, opts),
 			spotify: formatAssetUrl(embedIconsSpotify, opts),
 			tldraw: formatAssetUrl(embedIconsTldraw, opts),
-			val_town: formatAssetUrl(embedIconsValTown, opts),
 			vimeo: formatAssetUrl(embedIconsVimeo, opts),
 			youtube: formatAssetUrl(embedIconsYoutube, opts),
 		},

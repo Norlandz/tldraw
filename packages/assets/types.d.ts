@@ -87,7 +87,6 @@ export type AssetUrls = {
 		'geo-arrow-right': string
 		'geo-arrow-up': string
 		'geo-check-box': string
-		'geo-cloud': string
 		'geo-diamond': string
 		'geo-ellipse': string
 		'geo-hexagon': string
@@ -226,7 +225,6 @@ export type AssetUrls = {
 		scratch: string
 		spotify: string
 		tldraw: string
-		val_town: string
 		vimeo: string
 		youtube: string
 	}

@@ -1,7 +1,7 @@
+import { Matrix2d, toDomPrecision } from '@tldraw/primitives'
 import { react, track, useQuickReactor, useValue } from '@tldraw/state'
 import { TLHandle, TLShapeId } from '@tldraw/tlschema'
 import { dedupe, modulate, objectMapValues } from '@tldraw/utils'
-import classNames from 'classnames'
 import React from 'react'
 import { useCanvasEvents } from '../hooks/useCanvasEvents'
 import { useCoarsePointer } from '../hooks/useCoarsePointer'
@@ -12,22 +12,21 @@ import { useFixSafariDoubleTapZoomPencilEvents } from '../hooks/useFixSafariDoub
 import { useGestureEvents } from '../hooks/useGestureEvents'
 import { useHandleEvents } from '../hooks/useHandleEvents'
 import { useScreenBounds } from '../hooks/useScreenBounds'
-import { Matrix2d } from '../primitives/Matrix2d'
-import { toDomPrecision } from '../primitives/utils'
 import { debugFlags } from '../utils/debug-flags'
 import { LiveCollaborators } from './LiveCollaborators'
+import { SelectionBg } from './SelectionBg'
+import { SelectionFg } from './SelectionFg'
 import { Shape } from './Shape'
 import { ShapeIndicator } from './ShapeIndicator'
 
 /** @public */
-export const Canvas = track(function Canvas({ className }: { className?: string }) {
+export const Canvas = track(function Canvas() {
 	const editor = useEditor()
 
 	const { Background, SvgDefs } = useEditorComponents()
 
 	const rCanvas = React.useRef<HTMLDivElement>(null)
 	const rHtmlLayer = React.useRef<HTMLDivElement>(null)
-	const rHtmlLayer2 = React.useRef<HTMLDivElement>(null)
 
 	useScreenBounds()
 	useDocumentEvents()
@@ -41,8 +40,6 @@ export const Canvas = track(function Canvas({ className }: { className?: string 
 		() => {
 			const htmlElm = rHtmlLayer.current
 			if (!htmlElm) return
-			const htmlElm2 = rHtmlLayer2.current
-			if (!htmlElm2) return
 
 			const { x, y, z } = editor.camera
 
@@ -52,11 +49,12 @@ export const Canvas = track(function Canvas({ className }: { className?: string 
 			const offset =
 				z >= 1 ? modulate(z, [1, 8], [0.125, 0.5], true) : modulate(z, [0.1, 1], [-2, 0.125], true)
 
-			const transform = `scale(${toDomPrecision(z)}) translate(${toDomPrecision(
-				x + offset
-			)}px,${toDomPrecision(y + offset)}px)`
-			htmlElm.style.setProperty('transform', transform)
-			htmlElm2.style.setProperty('transform', transform)
+			htmlElm.style.setProperty(
+				'transform',
+				`scale(${toDomPrecision(z)}) translate(${toDomPrecision(x + offset)}px,${toDomPrecision(
+					y + offset
+				)}px)`
+			)
 		},
 		[editor]
 	)
@@ -84,33 +82,26 @@ export const Canvas = track(function Canvas({ className }: { className?: string 
 		rCanvas.current?.focus()
 	}, [])
 	return (
-		<div
-			ref={rCanvas}
-			draggable={false}
-			className={classNames('tl-canvas', className)}
-			data-testid="canvas"
-			{...events}
-		>
+		<div ref={rCanvas} draggable={false} className="tl-canvas" data-testid="canvas" {...events}>
 			{Background && <Background />}
 			<GridWrapper />
 			<UiLogger />
-			<svg className="tl-svg-context">
-				<defs>
-					{shapeSvgDefs}
-					{Cursor && <Cursor />}
-					<CollaboratorHint />
-					<ArrowheadDot />
-					<ArrowheadCross />
-					{SvgDefs && <SvgDefs />}
-				</defs>
-			</svg>
-			<div ref={rHtmlLayer} className="tl-html-layer tl-shapes" draggable={false}>
-				<SelectionBackgroundWrapper />
-				<ShapesToDisplay />
-			</div>
-			<div className="tl-fixed-layer tl-overlays">
-				<div ref={rHtmlLayer2} className="tl-html-layer">
-					{/* <GeometryDebuggingView /> */}
+			<div ref={rHtmlLayer} className="tl-html-layer" draggable={false}>
+				<svg className="tl-svg-context">
+					<defs>
+						{shapeSvgDefs}
+						{Cursor && <Cursor />}
+						<CollaboratorHint />
+						<ArrowheadDot />
+						<ArrowheadCross />
+						{SvgDefs && <SvgDefs />}
+					</defs>
+				</svg>
+				<SelectionBg />
+				<div className="tl-shapes">
+					<ShapesToDisplay />
+				</div>
+				<div className="tl-overlays">
 					<HandlesWrapper />
 					<BrushWrapper />
 					<ScribbleWrapper />
@@ -119,7 +110,7 @@ export const Canvas = track(function Canvas({ className }: { className?: string 
 					<HoveredShapeIndicator />
 					<HintedShapeIndicator />
 					<SnapLinesWrapper />
-					<SelectionForegroundWrapper />
+					<SelectionFg />
 					<LiveCollaborators />
 				</div>
 			</div>
@@ -127,53 +118,58 @@ export const Canvas = track(function Canvas({ className }: { className?: string 
 	)
 })
 
-function GridWrapper() {
+const GridWrapper = track(function GridWrapper() {
 	const editor = useEditor()
-	const gridSize = useValue('gridSize', () => editor.documentSettings.gridSize, [editor])
-	const { x, y, z } = useValue('camera', () => editor.camera, [editor])
-	const isGridMode = useValue('isGridMode', () => editor.instanceState.isGridMode, [editor])
 	const { Grid } = useEditorComponents()
+
+	// get grid from context
+
+	const { x, y, z } = editor.camera
+	const isGridMode = editor.isGridMode
 
 	if (!(Grid && isGridMode)) return null
 
-	return <Grid x={x} y={y} z={z} size={gridSize} />
-}
+	return <Grid x={x} y={y} z={z} size={editor.gridSize} />
+})
 
-function ScribbleWrapper() {
+const ScribbleWrapper = track(function ScribbleWrapper() {
 	const editor = useEditor()
-	const scribble = useValue('scribble', () => editor.instanceState.scribble, [editor])
-	const zoomLevel = useValue('zoomLevel', () => editor.zoomLevel, [editor])
+	const scribble = editor.scribble
+	const zoom = editor.zoomLevel
+
 	const { Scribble } = useEditorComponents()
 
 	if (!(Scribble && scribble)) return null
 
-	return <Scribble className="tl-user-scribble" scribble={scribble} zoom={zoomLevel} />
-}
+	return <Scribble className="tl-user-scribble" scribble={scribble} zoom={zoom} />
+})
 
-function BrushWrapper() {
+const BrushWrapper = track(function BrushWrapper() {
 	const editor = useEditor()
-	const brush = useValue('brush', () => editor.instanceState.brush, [editor])
+	const { brush } = editor
 	const { Brush } = useEditorComponents()
 
-	if (!(Brush && brush)) return null
+	if (!(Brush && brush && editor.isIn('select.brushing'))) return null
 
 	return <Brush className="tl-user-brush" brush={brush} />
-}
+})
 
-function ZoomBrushWrapper() {
+export const ZoomBrushWrapper = track(function Zoom() {
 	const editor = useEditor()
-	const zoomBrush = useValue('zoomBrush', () => editor.instanceState.zoomBrush, [editor])
+	const { zoomBrush } = editor
 	const { ZoomBrush } = useEditorComponents()
 
-	if (!(ZoomBrush && zoomBrush)) return null
+	if (!(ZoomBrush && zoomBrush && editor.isIn('zoom'))) return null
 
 	return <ZoomBrush className="tl-user-brush" brush={zoomBrush} />
-}
+})
 
-function SnapLinesWrapper() {
+export const SnapLinesWrapper = track(function SnapLines() {
 	const editor = useEditor()
-	const lines = useValue('snapLines', () => editor.snaps.lines, [editor])
-	const zoomLevel = useValue('zoomLevel', () => editor.zoomLevel, [editor])
+	const {
+		snaps: { lines },
+		zoomLevel,
+	} = editor
 	const { SnapLine } = useEditorComponents()
 
 	if (!(SnapLine && lines.length > 0)) return null
@@ -185,35 +181,31 @@ function SnapLinesWrapper() {
 			))}
 		</>
 	)
-}
+})
 
 const MIN_HANDLE_DISTANCE = 48
 
-function HandlesWrapper() {
+const HandlesWrapper = track(function HandlesWrapper() {
 	const editor = useEditor()
-	const { Handles } = useEditorComponents()
 
-	const zoomLevel = useValue('zoomLevel', () => editor.zoomLevel, [editor])
-	const isCoarse = useValue('coarse pointer', () => editor.instanceState.isCoarsePointer, [editor])
-	const onlySelectedShape = useValue('onlySelectedShape', () => editor.onlySelectedShape, [editor])
-	const isChangingStyle = useValue('isChangingStyle', () => editor.instanceState.isChangingStyle, [
-		editor,
-	])
-	const isReadonly = useValue('isChangingStyle', () => editor.instanceState.isReadonly, [editor])
-	const handles = useValue(
-		'handles',
-		() => (editor.onlySelectedShape ? editor.getShapeHandles(editor.onlySelectedShape) : undefined),
-		[editor]
-	)
-	const transform = useValue(
-		'transform',
-		() =>
-			editor.onlySelectedShape ? editor.getShapePageTransform(editor.onlySelectedShape) : undefined,
-		[editor]
-	)
+	const zoom = editor.zoomLevel
+	const isChangingStyle = editor.isChangingStyle
 
-	if (!Handles || !onlySelectedShape || isChangingStyle || isReadonly) return null
+	const onlySelectedShape = editor.onlySelectedShape
+
+	const shouldDisplayHandles =
+		editor.isInAny('select.idle', 'select.pointing_handle') &&
+		!isChangingStyle &&
+		!editor.isReadOnly
+
+	if (!(onlySelectedShape && shouldDisplayHandles)) return null
+
+	const handles = editor.getHandles(onlySelectedShape)
+
 	if (!handles) return null
+
+	const transform = editor.getPageTransform(onlySelectedShape)
+
 	if (!transform) return null
 
 	// Don't display a temporary handle if the distance between it and its neighbors is too small.
@@ -224,7 +216,7 @@ function HandlesWrapper() {
 			const prev = handles[i - 1]
 			const next = handles[i + 1]
 			if (prev && next) {
-				if (Math.hypot(prev.y - next.y, prev.x - next.x) < MIN_HANDLE_DISTANCE / zoomLevel) {
+				if (Math.hypot(prev.y - next.y, prev.x - next.x) < MIN_HANDLE_DISTANCE / zoom) {
 					continue
 				}
 			}
@@ -236,35 +228,17 @@ function HandlesWrapper() {
 	handlesToDisplay.sort((a) => (a.type === 'vertex' ? 1 : -1))
 
 	return (
-		<Handles>
+		<svg className="tl-user-handles tl-overlays__item">
 			<g transform={Matrix2d.toCssString(transform)}>
 				{handlesToDisplay.map((handle) => {
-					return (
-						<HandleWrapper
-							key={handle.id}
-							shapeId={onlySelectedShape.id}
-							handle={handle}
-							zoom={zoomLevel}
-							isCoarse={isCoarse}
-						/>
-					)
+					return <HandleWrapper key={handle.id} shapeId={onlySelectedShape.id} handle={handle} />
 				})}
 			</g>
-		</Handles>
+		</svg>
 	)
-}
+})
 
-function HandleWrapper({
-	shapeId,
-	handle,
-	zoom,
-	isCoarse,
-}: {
-	shapeId: TLShapeId
-	handle: TLHandle
-	zoom: number
-	isCoarse: boolean
-}) {
+const HandleWrapper = ({ shapeId, handle }: { shapeId: TLShapeId; handle: TLHandle }) => {
 	const events = useHandleEvents(shapeId, handle.id)
 	const { Handle } = useEditorComponents()
 
@@ -272,7 +246,7 @@ function HandleWrapper({
 
 	return (
 		<g aria-label="handle" transform={`translate(${handle.x}, ${handle.y})`} {...events}>
-			<Handle shapeId={shapeId} handle={handle} zoom={zoom} isCoarse={isCoarse} />
+			<Handle shapeId={shapeId} handle={handle} />
 		</g>
 	)
 }
@@ -305,58 +279,49 @@ const ShapesToDisplay = track(function ShapesToDisplay() {
 	)
 })
 
-function SelectedIdIndicators() {
+const SelectedIdIndicators = track(function SelectedIdIndicators() {
 	const editor = useEditor()
-	const selectedShapeIds = useValue(
-		'selectedShapeIds',
-		() => editor.currentPageState.selectedShapeIds,
-		[editor]
-	)
-	const shouldDisplay = useValue(
-		'should display selected ids',
-		() => {
-			// todo: move to tldraw selected ids wrapper
-			return (
-				editor.isInAny(
-					'select.idle',
-					'select.brushing',
-					'select.scribble_brushing',
-					'select.pointing_shape',
-					'select.pointing_selection',
-					'select.pointing_handle'
-				) && !editor.instanceState.isChangingStyle
-			)
-		},
-		[editor]
-	)
+
+	const shouldDisplay =
+		editor.isInAny(
+			'select.idle',
+			'select.brushing',
+			'select.scribble_brushing',
+			'select.pointing_shape',
+			'select.pointing_selection',
+			'select.pointing_handle'
+		) && !editor.isChangingStyle
 
 	if (!shouldDisplay) return null
 
 	return (
 		<>
-			{selectedShapeIds.map((id) => (
+			{editor.selectedIds.map((id) => (
 				<ShapeIndicator key={id + '_indicator'} className="tl-user-indicator__selected" id={id} />
 			))}
 		</>
 	)
-}
+})
 
 const HoveredShapeIndicator = function HoveredShapeIndicator() {
 	const editor = useEditor()
-	const { HoveredShapeIndicator } = useEditorComponents()
-	const hoveredShapeId = useValue('hovered id', () => editor.currentPageState.hoveredShapeId, [
-		editor,
-	])
 
-	if (!hoveredShapeId || !HoveredShapeIndicator) return null
+	const displayingHoveredId = useValue(
+		'hovered id and should display',
+		() =>
+			editor.isInAny('select.idle', 'select.editing_shape') ? editor.pageState.hoveredId : null,
+		[editor]
+	)
 
-	return <HoveredShapeIndicator shapeId={hoveredShapeId} />
+	if (!displayingHoveredId) return null
+
+	return <ShapeIndicator className="tl-user-indicator__hovered" id={displayingHoveredId} />
 }
 
 const HintedShapeIndicator = track(function HintedShapeIndicator() {
 	const editor = useEditor()
 
-	const ids = dedupe(editor.hintingShapeIds)
+	const ids = dedupe(editor.hintingIds)
 
 	if (!ids.length) return null
 
@@ -411,7 +376,7 @@ function ArrowheadCross() {
 
 const DebugSvgCopy = track(function DupSvg({ id }: { id: TLShapeId }) {
 	const editor = useEditor()
-	const shape = editor.getShape(id)
+	const shape = editor.getShapeById(id)
 
 	const [html, setHtml] = React.useState('')
 
@@ -424,7 +389,7 @@ const DebugSvgCopy = track(function DupSvg({ id }: { id: TLShapeId }) {
 		const unsubscribe = react('shape to svg', async () => {
 			const renderId = Math.random()
 			latest = renderId
-			const bb = editor.getShapePageBounds(id)
+			const bb = editor.getPageBoundsById(id)
 			const el = await editor.getSvg([id], { padding: 0 })
 			if (el && bb && latest === renderId) {
 				el.style.setProperty('overflow', 'visible')
@@ -467,25 +432,3 @@ const UiLogger = track(() => {
 		</div>
 	)
 })
-
-export function SelectionForegroundWrapper() {
-	const editor = useEditor()
-	const selectionRotation = useValue('selection rotation', () => editor.selectionRotation, [editor])
-	const selectionBounds = useValue('selection bounds', () => editor.selectionRotatedPageBounds, [
-		editor,
-	])
-	const { SelectionForeground } = useEditorComponents()
-	if (!selectionBounds || !SelectionForeground) return null
-	return <SelectionForeground bounds={selectionBounds} rotation={selectionRotation} />
-}
-
-export function SelectionBackgroundWrapper() {
-	const editor = useEditor()
-	const selectionRotation = useValue('selection rotation', () => editor.selectionRotation, [editor])
-	const selectionBounds = useValue('selection bounds', () => editor.selectionRotatedPageBounds, [
-		editor,
-	])
-	const { SelectionBackground } = useEditorComponents()
-	if (!selectionBounds || !SelectionBackground) return null
-	return <SelectionBackground bounds={selectionBounds} rotation={selectionRotation} />
-}

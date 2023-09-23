@@ -1,69 +1,64 @@
-import { TLGroupShape, groupShapeMigrations, groupShapeProps } from '@tldraw/tlschema'
+import { Box2d, Matrix2d, Vec2d } from '@tldraw/primitives'
+import { TLGroupShape } from '@tldraw/tlschema'
 import { SVGContainer } from '../../../components/SVGContainer'
-import { Geometry2d } from '../../../primitives/geometry/Geometry2d'
-import { Group2d } from '../../../primitives/geometry/Group2d'
-import { Polygon2d } from '../../../primitives/geometry/Polygon2d'
-import { Polyline2d } from '../../../primitives/geometry/Polyline2d'
-import { Rectangle2d } from '../../../primitives/geometry/Rectangle2d'
 import { ShapeUtil, TLOnChildrenChangeHandler } from '../ShapeUtil'
-import { DashedOutlineBox } from './DashedOutlineBox'
+import { DashedOutlineBox } from '../shared/DashedOutlineBox'
 
 /** @public */
 export class GroupShapeUtil extends ShapeUtil<TLGroupShape> {
 	static override type = 'group' as const
-	static override props = groupShapeProps
-	static override migrations = groupShapeMigrations
 
-	override hideSelectionBoundsFg = () => true
+	type = 'group' as const
 
-	override canBind = () => false
+	hideSelectionBoundsBg = () => false
+	hideSelectionBoundsFg = () => true
+
+	canBind = () => false
 
 	getDefaultProps(): TLGroupShape['props'] {
 		return {}
 	}
 
-	getGeometry(shape: TLGroupShape): Geometry2d {
-		const children = this.editor.getSortedChildIdsForParent(shape.id)
+	getBounds(shape: TLGroupShape): Box2d {
+		const children = this.editor.getSortedChildIds(shape.id)
 		if (children.length === 0) {
-			return new Rectangle2d({ width: 1, height: 1, isFilled: false })
+			return new Box2d()
 		}
 
-		return new Group2d({
-			children: children.map((childId) => {
-				const shape = this.editor.getShape(childId)!
-				const geometry = this.editor.getShapeGeometry(childId)
-				const points = this.editor.getShapeLocalTransform(shape)!.applyToPoints(geometry.vertices)
-
-				if (geometry.isClosed) {
-					return new Polygon2d({
-						points,
-						isFilled: true,
-					})
-				}
-
-				return new Polyline2d({
-					points,
-				})
-			}),
+		const allChildPoints = children.flatMap((childId) => {
+			const shape = this.editor.getShapeById(childId)!
+			return this.editor
+				.getOutlineById(childId)
+				.map((point) => Matrix2d.applyToPoint(this.editor.getTransform(shape), point))
 		})
+
+		return Box2d.FromPoints(allChildPoints)
+	}
+
+	getCenter(shape: TLGroupShape): Vec2d {
+		return this.editor.getBounds(shape).center
+	}
+
+	getOutline(shape: TLGroupShape): Vec2d[] {
+		return this.editor.getBounds(shape).corners
 	}
 
 	component(shape: TLGroupShape) {
 		// Not a class component, but eslint can't tell that :(
 		const {
-			erasingShapeIds,
-			currentPageState: { hintingShapeIds, focusedGroupId },
+			erasingIdsSet,
+			pageState: { hintingIds, focusLayerId },
 			zoomLevel,
 		} = this.editor
 
-		const isErasing = erasingShapeIds.includes(shape.id)
+		const isErasing = erasingIdsSet.has(shape.id)
 
 		const isHintingOtherGroup =
-			hintingShapeIds.length > 0 &&
-			hintingShapeIds.some(
+			hintingIds.length > 0 &&
+			hintingIds.some(
 				(id) =>
 					id !== shape.id &&
-					this.editor.isShapeOfType<TLGroupShape>(this.editor.getShape(id)!, 'group')
+					this.editor.isShapeOfType(this.editor.getShapeById(id)!, GroupShapeUtil)
 			)
 
 		if (
@@ -71,12 +66,12 @@ export class GroupShapeUtil extends ShapeUtil<TLGroupShape> {
 			!isErasing &&
 			// show the outline while the group is focused unless something outside of the group is being hinted
 			// this happens dropping shapes from a group onto some outside group
-			(shape.id !== focusedGroupId || isHintingOtherGroup)
+			(shape.id !== focusLayerId || isHintingOtherGroup)
 		) {
 			return null
 		}
 
-		const bounds = this.editor.getShapeGeometry(shape).bounds
+		const bounds = this.editor.getBounds(shape)
 
 		return (
 			<SVGContainer id={shape.id}>
@@ -91,24 +86,24 @@ export class GroupShapeUtil extends ShapeUtil<TLGroupShape> {
 			camera: { z: zoomLevel },
 		} = this.editor
 
-		const bounds = this.editor.getShapeGeometry(shape).bounds
+		const bounds = this.editor.getBounds(shape)
 
 		return <DashedOutlineBox className="" bounds={bounds} zoomLevel={zoomLevel} />
 	}
 
-	override onChildrenChange: TLOnChildrenChangeHandler<TLGroupShape> = (group) => {
-		const children = this.editor.getSortedChildIdsForParent(group.id)
+	onChildrenChange: TLOnChildrenChangeHandler<TLGroupShape> = (group) => {
+		const children = this.editor.getSortedChildIds(group.id)
 		if (children.length === 0) {
-			if (this.editor.currentPageState.focusedGroupId === group.id) {
-				this.editor.popFocusedGroupId()
+			if (this.editor.pageState.focusLayerId === group.id) {
+				this.editor.popFocusLayer()
 			}
 			this.editor.deleteShapes([group.id])
 			return
 		} else if (children.length === 1) {
-			if (this.editor.currentPageState.focusedGroupId === group.id) {
-				this.editor.popFocusedGroupId()
+			if (this.editor.pageState.focusLayerId === group.id) {
+				this.editor.popFocusLayer()
 			}
-			this.editor.reparentShapes(children, group.parentId)
+			this.editor.reparentShapesById(children, group.parentId)
 			this.editor.deleteShapes([group.id])
 			return
 		}

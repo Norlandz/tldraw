@@ -23,7 +23,6 @@ export interface TLHandle {
 	id: string
 	type: TLHandleType
 	canBind?: boolean
-	canSnap?: boolean
 	index: string
 	x: number
 	y: number
@@ -34,7 +33,6 @@ export const handleValidator: T.Validator<TLHandle> = T.object({
 	id: T.string,
 	type: T.setEnum(TL_HANDLE_TYPES),
 	canBind: T.boolean.optional(),
-	canSnap: T.boolean.optional(),
 	index: T.string,
 	x: T.number,
 	y: T.number,

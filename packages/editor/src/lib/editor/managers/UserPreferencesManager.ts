@@ -1,4 +1,3 @@
-import { computed } from '@tldraw/state'
 import { TLUserPreferences } from '../../config/TLUserPreferences'
 import { TLUser } from '../../config/createTLUser'
 
@@ -7,40 +6,40 @@ export class UserPreferencesManager {
 
 	updateUserPreferences = (userPreferences: Partial<TLUserPreferences>) => {
 		this.user.setUserPreferences({
-			...this.userPreferences,
+			...this.user.userPreferences.value,
 			...userPreferences,
 		})
 	}
 
-	@computed get userPreferences() {
-		return this.user.userPreferences.value
+	get userPreferences() {
+		return this.user.userPreferences
 	}
 
-	@computed get isDarkMode() {
-		return this.userPreferences.isDarkMode
+	get isDarkMode() {
+		return this.user.userPreferences.value.isDarkMode
 	}
 
-	@computed get animationSpeed() {
-		return this.userPreferences.animationSpeed
+	get animationSpeed() {
+		return this.user.userPreferences.value.animationSpeed
 	}
 
-	@computed get id() {
-		return this.userPreferences.id
+	get id() {
+		return this.user.userPreferences.value.id
 	}
 
-	@computed get name() {
-		return this.userPreferences.name
+	get name() {
+		return this.user.userPreferences.value.name
 	}
 
-	@computed get locale() {
-		return this.userPreferences.locale
+	get locale() {
+		return this.user.userPreferences.value.locale
 	}
 
-	@computed get color() {
-		return this.userPreferences.color
+	get color() {
+		return this.user.userPreferences.value.color
 	}
 
-	@computed get isSnapMode() {
-		return this.userPreferences.isSnapMode
+	get isSnapMode() {
+		return this.user.userPreferences.value.isSnapMode
 	}
 }

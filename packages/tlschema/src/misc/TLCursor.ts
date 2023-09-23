@@ -1,5 +1,6 @@
 import { T } from '@tldraw/validate'
 import { SetValue } from '../util-types'
+import { TLCanvasUiColor, canvasUiColorTypeValidator } from './TLColor'
 
 /**
  * The cursor types used by tldraw's default shapes.
@@ -43,12 +44,14 @@ export const cursorTypeValidator = T.setEnum(TL_CURSOR_TYPES)
  *
  *  @public */
 export interface TLCursor {
+	color: TLCanvasUiColor
 	type: TLCursorType
 	rotation: number
 }
 
 /** @internal */
-export const cursorValidator: T.Validator<TLCursor> = T.object<TLCursor>({
+export const cursorValidator: T.Validator<TLCursor> = T.object({
+	color: canvasUiColorTypeValidator,
 	type: cursorTypeValidator,
 	rotation: T.number,
 })

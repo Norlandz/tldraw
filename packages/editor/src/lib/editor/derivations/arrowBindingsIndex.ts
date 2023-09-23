@@ -1,6 +1,7 @@
 import { Computed, RESET_VALUE, computed, isUninitialized } from '@tldraw/state'
 import { TLArrowShape, TLShape, TLShapeId } from '@tldraw/tlschema'
 import { Editor } from '../Editor'
+import { ArrowShapeUtil } from '../shapes/arrow/ArrowShapeUtil'
 
 export type TLArrowBindingsIndex = Record<
 	TLShapeId,
@@ -82,7 +83,7 @@ export const arrowBindingsIndex = (editor: Editor): Computed<TLArrowBindingsInde
 
 		for (const changes of diff) {
 			for (const newShape of Object.values(changes.added)) {
-				if (editor.isShapeOfType<TLArrowShape>(newShape, 'arrow')) {
+				if (editor.isShapeOfType(newShape, ArrowShapeUtil)) {
 					const { start, end } = newShape.props
 					if (start.type === 'binding') {
 						addBinding(start.boundShapeId, newShape.id, 'start')
@@ -95,8 +96,8 @@ export const arrowBindingsIndex = (editor: Editor): Computed<TLArrowBindingsInde
 
 			for (const [prev, next] of Object.values(changes.updated) as [TLShape, TLShape][]) {
 				if (
-					!editor.isShapeOfType<TLArrowShape>(prev, 'arrow') ||
-					!editor.isShapeOfType<TLArrowShape>(next, 'arrow')
+					!editor.isShapeOfType(prev, ArrowShapeUtil) ||
+					!editor.isShapeOfType(next, ArrowShapeUtil)
 				)
 					continue
 
@@ -123,7 +124,7 @@ export const arrowBindingsIndex = (editor: Editor): Computed<TLArrowBindingsInde
 			}
 
 			for (const prev of Object.values(changes.removed)) {
-				if (editor.isShapeOfType<TLArrowShape>(prev, 'arrow')) {
+				if (editor.isShapeOfType(prev, ArrowShapeUtil)) {
 					const { start, end } = prev.props
 					if (start.type === 'binding') {
 						removingBinding(start.boundShapeId, prev.id, 'start')
