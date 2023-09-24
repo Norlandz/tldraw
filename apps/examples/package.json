@@ -27,7 +27,8 @@
 		"infinite"
 	],
 	"scripts": {
-		"dev": "concurrently \"vite\" \"HOST=localhost PORT=1234 npx y-websocket\" --kill-others",
+		"// dev": "concurrently \"vite\" \"HOST=localhost PORT=1234 npx y-websocket\" --kill-others",
+		"dev": "concurrently \"vite\" \"set HOST=localhost&& set PORT=1234&& npx y-websocket\" --kill-others",
 		"build": "vite build",
 		"lint": "yarn run -T tsx ../../scripts/lint.ts",
 		"e2e": "playwright test -c ./e2e/playwright.config.ts",
