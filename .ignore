@@ -16,5 +16,3 @@ yarn.lock
 apps/example/www/index.css
 **/dist/*
 *.cjs
-
-packages/tldraw/tldraw.css
